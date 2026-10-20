@@ -42,17 +42,19 @@ jobs:
           name: build-log
           path: build.log
 
-      - name: Report failure as an issue comment
-        if: failure()
+      - name: Report build log as an issue (debug)
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "빌드 실패 (run ${{ github.run_id }}):"
+            echo "빌드 로그 (run ${{ github.run_id }}):"
             echo '```'
-            tail -n 150 build.log
+            tail -n 200 build.log
             echo '```'
+            echo "---find apk---"
+            find . -iname "*.apk"
           } > /tmp/fail-body.md
           gh issue create --repo "${{ github.repository }}" \
-            --title "빌드 실패 (run ${{ github.run_id }})" \
+            --title "빌드 로그 (run ${{ github.run_id }})" \
             --body-file /tmp/fail-body.md || true
