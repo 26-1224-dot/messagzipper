@@ -47,9 +47,10 @@ jobs:
         run: |
           echo "---find apk/aab---"
           find . -iname "*.apk" -o -iname "*.aab" 2>/dev/null
-          echo "---tail build.log---"
+          echo "---build.log line count---"
           wc -l build.log
-          tail -n 60 build.log | while IFS= read -r line; do
-            esc=$(printf '%s' "$line" | sed 's/%/%25/g' | tr -d '\r')
+          echo "---key lines---"
+          grep -n -E "FAILURE|What went wrong|Caused by|error:|> Task|BUILD FAILED|Exception:|Execution failed" build.log | head -n 40 | while IFS= read -r line; do
+            esc=$(printf '%s' "$line" | sed 's/%/%25/g' | tr -d '\r' | cut -c1-500)
             echo "::error::${esc}"
           done
