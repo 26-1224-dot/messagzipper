@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">메세지퍼</string>
+    <string name="service_description">메신저 입력창의 문장을 기기 안에서 확인하고, 부적절하면 전송 버튼 위에 지퍼를 덮어 한 번 더 생각하게 합니다. 입력창의 글자만 읽으며 서버로 보내지 않습니다. 말투 변환 버튼을 누른 경우에만 해당 문장이 변환 서비스로 전송됩니다.</string>
+</resources>
