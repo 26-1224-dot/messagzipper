@@ -27,7 +27,9 @@ jobs:
         run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -49,6 +51,6 @@ jobs:
           find . -iname "*.apk" -o -iname "*.aab" 2>/dev/null
           echo "---build.log line count---"
           wc -l build.log
-          echo "---last 100 lines as one annotation---"
-          joined=$(tail -n 100 build.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}' | cut -c1-6000)
+          echo "---non-stackframe lines (last 150, no 'at ...')---"
+          joined=$(grep -vE '^\s*at ' build.log | tail -n 150 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}' | cut -c1-6000)
           echo "::error::${joined}"
