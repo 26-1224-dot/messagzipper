@@ -31,11 +31,33 @@ jobs:
           set -o pipefail
           gradle :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
-      - name: Upload APK
+      - name: Verify APK integrity
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          ls -la "$apk"
+          sha256sum "$apk"
+          unzip -l "$apk" | tail -5
+          unzip -t "$apk" | tail -5
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk MessaZipper.apk
+
+      - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: messazipper-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: MessaZipper.apk
+
+      - name: Publish GitHub Release with APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-${{ github.run_number }}"
+          gh release create "$tag" MessaZipper.apk \
+            --repo "${{ github.repository }}" \
+            --title "MessaZipper 빌드 #${{ github.run_number }}" \
+            --notes "자동 빌드. 이 APK를 폰 브라우저에서 바로 받아 설치하세요." \
+            --latest
 
       - name: Upload build log
         if: always()
