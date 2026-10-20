@@ -42,6 +42,20 @@ jobs:
           unzip -l "$apk" | tail -5
           unzip -t "$apk" | tail -5
 
+      - name: Verify APK signature
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
+          {
+            echo "build-tools dir: $bt"
+            "${bt}apksigner" verify --verbose --print-certs "$apk" 2>&1 || echo "APKSIGNER_FAILED exit=$?"
+            echo "---aapt badging---"
+            "${bt}aapt" dump badging "$apk" 2>&1 | head -25 || echo "AAPT_FAILED exit=$?"
+          } > sign-check.log
+          cat sign-check.log
+          joined=$(sed 's/%/%25/g; s/\r//g' sign-check.log | awk '{printf "%s%%0A", $0}' | cut -c1-5000)
+          echo "::error::${joined}"
+
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk MessaZipper.apk
 
