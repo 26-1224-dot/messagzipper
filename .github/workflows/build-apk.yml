@@ -42,19 +42,14 @@ jobs:
           name: build-log
           path: build.log
 
-      - name: Report build log as an issue (debug)
+      - name: Print build log as annotations (debug)
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          {
-            echo "빌드 로그 (run ${{ github.run_id }}):"
-            echo '```'
-            tail -n 200 build.log
-            echo '```'
-            echo "---find apk---"
-            find . -iname "*.apk"
-          } > /tmp/fail-body.md
-          gh issue create --repo "${{ github.repository }}" \
-            --title "빌드 로그 (run ${{ github.run_id }})" \
-            --body-file /tmp/fail-body.md || true
+          echo "---find apk/aab---"
+          find . -iname "*.apk" -o -iname "*.aab" 2>/dev/null
+          echo "---tail build.log---"
+          wc -l build.log
+          tail -n 60 build.log | while IFS= read -r line; do
+            esc=$(printf '%s' "$line" | sed 's/%/%25/g' | tr -d '\r')
+            echo "::error::${esc}"
+          done
