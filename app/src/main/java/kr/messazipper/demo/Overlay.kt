@@ -42,7 +42,11 @@ class Overlay(private val svc: AccessibilityService) {
         ).also { it.gravity = gravity; it.x = x; it.y = y }
 
     private fun add(v: View, p: WindowManager.LayoutParams) = try { wm.addView(v, p) } catch (_: Exception) {}
-    private fun remove(v: View?) = try { if (v != null) wm.removeView(v) } catch (_: Exception) {}
+    private fun remove(v: View?) {
+        try {
+            if (v != null) wm.removeView(v)
+        } catch (_: Exception) {}
+    }
 
     // ───────── 떠 있는 지퍼 버튼(친구 ↔ 윗사람 모드 전환) ─────────
     fun showFab(formal: Boolean) {
