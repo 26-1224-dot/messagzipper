@@ -49,8 +49,6 @@ jobs:
           find . -iname "*.apk" -o -iname "*.aab" 2>/dev/null
           echo "---build.log line count---"
           wc -l build.log
-          echo "---key lines---"
-          grep -n -E "FAILURE|What went wrong|Caused by|error:|> Task|BUILD FAILED|Exception:|Execution failed" build.log | head -n 40 | while IFS= read -r line; do
-            esc=$(printf '%s' "$line" | sed 's/%/%25/g' | tr -d '\r' | cut -c1-500)
-            echo "::error::${esc}"
-          done
+          echo "---last 100 lines as one annotation---"
+          joined=$(tail -n 100 build.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}' | cut -c1-6000)
+          echo "::error::${joined}"
