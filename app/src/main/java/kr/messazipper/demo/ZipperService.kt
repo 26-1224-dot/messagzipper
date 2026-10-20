@@ -61,25 +61,39 @@ class ZipperService : AccessibilityService() {
         }
     }
 
-    /** 화면에서 전송 버튼을 찾아 위치를 얻는다. 못 찾으면 입력칸 오른쪽 끝을 대신 쓴다(대략적 위치). */
+    /**
+     * 전송 버튼의 정확한 위치를 매번 믿고 찾기는 어렵다(카톡 전송 버튼은
+     * 글자 없는 아이콘이라 텍스트로 못 찾는 경우가 많다). 그래서 기본은
+     * 입력칸과 같은 줄 전체를 화면 끝까지 덮어서, 전송 버튼이 그 줄 어디에
+     * 있든 같이 막히게 한다. 텍스트로 된 전송 버튼을 찾으면 그 버튼까지
+     * 포함하도록 범위를 넓힌다.
+     */
     private fun findSendBounds(): Rect {
-        val r = Rect()
+        val b = Rect()
+        inputNode?.getBoundsInScreen(b)
+        val screenW = resources.displayMetrics.widthPixels
+        // 입력칸이 있는 줄 전체: 왼쪽 끝부터 화면 오른쪽 끝까지, 위아래로 살짝 여유를 둔다.
+        val pad = (6 * resources.displayMetrics.density).toInt()
+        var row = Rect(0, (b.top - pad).coerceAtLeast(0), screenW, b.bottom + pad)
+
         val root = rootInActiveWindow
         if (root != null) {
-            val screenW = resources.displayMetrics.widthPixels
             for (label in sendLabels) {
                 for (n in root.findAccessibilityNodeInfosByText(label)) {
                     if (!n.isClickable && n.parent?.isClickable != true) continue
-                    n.getBoundsInScreen(r)
-                    if (r.width() in 1 until screenW / 3) return Rect(r)
+                    val br = Rect()
+                    n.getBoundsInScreen(br)
+                    if (br.width() in 1 until screenW / 2 && br.top in (b.top - dp(80))..(b.bottom + dp(80))) {
+                        // 버튼이 입력칸과 비슷한 높이에 있을 때만 범위를 그 버튼까지 넓힌다.
+                        row = Rect(row.left, minOf(row.top, br.top), maxOf(row.right, br.right), maxOf(row.bottom, br.bottom))
+                    }
                 }
             }
         }
-        val b = Rect()
-        inputNode?.getBoundsInScreen(b)
-        val size = (56 * resources.displayMetrics.density).toInt()
-        return Rect(b.right - size, b.top, b.right, b.top + size.coerceAtLeast(b.height()))
+        return row
     }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun openLockPanel() {
         overlay.showLockPanel(
