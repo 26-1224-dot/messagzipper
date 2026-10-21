@@ -17,6 +17,19 @@ object Prefs {
     fun formal(c: Context) = sp(c).getBoolean("formal", false)
     fun setFormal(c: Context, v: Boolean) = sp(c).edit().putBoolean("formal", v).apply()
 
+    /** 방별로 직접 정한 모드 기억. null = 아직 안 정함(자동 판별) */
+    fun roomMode(c: Context, title: String): Boolean? {
+        val v = sp(c).getInt("room:$title", -1)
+        return if (v < 0) null else v == 1
+    }
+    fun setRoomMode(c: Context, title: String, formal: Boolean) =
+        sp(c).edit().putInt("room:$title", if (formal) 1 else 0).apply()
+    fun clearRoomModes(c: Context) {
+        val e = sp(c).edit()
+        sp(c).all.keys.filter { it.startsWith("room:") }.forEach { e.remove(it) }
+        e.apply()
+    }
+
     fun apiKey(c: Context) = sp(c).getString("apikey", "") ?: ""
     fun setApiKey(c: Context, v: String) = sp(c).edit().putString("apikey", v.trim()).apply()
 }

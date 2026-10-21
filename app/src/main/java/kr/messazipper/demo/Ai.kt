@@ -16,17 +16,22 @@ object Llm {
     private val main = Handler(Looper.getMainLooper())
 
     private const val JUDGE_SYS =
-        "너는 메신저 앱의 '감정 브레이크'다. 사용자가 전송 버튼을 누른 순간, 보내려는 메시지를 그대로 보내도 될지 판단한다.\n" +
-        "판단 기준:\n" +
-        "1. 상대가 윗사람(선생님·교수·상사·부모님·목사님 등)이거나 대화에서 사용자가 존댓말을 쓰는 사이라면, 반말·욕설·비꼬기·무례한 표현은 막는다.\n" +
-        "2. 친구·또래 사이에서 평소 욕이나 거친 농담을 웃으며 주고받는 편한 분위기라면, 욕이 들어 있어도 막지 않는다.\n" +
-        "3. 관계와 상관없이, 화·분노·서운함에 휩싸여 홧김에 보내는 메시지는 막는다. 예: 상대를 깎아내리는 비난, 위협, 절교·차단 선언, 다툼 중에 감정이 폭발한 말, 나중에 후회할 만한 말.\n" +
-        "4. 장난인지 진심인지는 최근 대화의 흐름(웃음 표현, 다툼 여부, 상대의 반응)과 메시지의 감정 강도로 판단한다.\n" +
-        "5. 확실하지 않으면 막지 않는다. 불필요하게 막아서 대화를 방해하지 않는 것도 중요하다.\n" +
-        "반드시 아래 형식의 JSON만 출력한다.\n" +
-        "{\"lock\": true 또는 false, \"relation\": \"친구\" 또는 \"윗사람\" 또는 \"모름\", " +
-        "\"mood\": \"장난\" 또는 \"평온\" 또는 \"갈등\" 또는 \"격앙\", " +
-        "\"reason\": \"lock이 true일 때 사용자에게 보여줄 부드러운 존댓말 한 문장(30자 이내). false면 빈 문자열\"}"
+        "너는 메신저 대화 분석기다. 최근 대화와 사용자가 지금 보내려는 메시지를 보고 아래 항목을 '각각 따로' 판단한다.\n" +
+        "1) relation: 상대와의 관계. 방 이름과 대화 말투(사용자가 존댓말을 쓰는지)를 근거로 \"친구\" 또는 \"윗사람\".\n" +
+        "2) atmosphere: 보내려는 메시지는 빼고, 그 직전까지의 대화 분위기.\n" +
+        "   - \"편한 장난\": 서로 웃으며(ㅋㅋ 등) 거친 말이나 욕을 장난으로 주고받는 중\n" +
+        "   - \"평범\": 일상적인 대화\n" +
+        "   - \"긴장\": 한쪽이 서운함이나 불만을 드러내기 시작함\n" +
+        "   - \"다툼\": 서로 탓하거나 화를 내며 싸우는 중\n" +
+        "3) intent: 보내려는 메시지의 성격.\n" +
+        "   - \"장난\": 웃자고 하는 말 / \"일상\": 평범한 말 / \"거친말\": 욕이 섞였지만 악의는 없음\n" +
+        "   - \"불만\": 서운함·탓하기·짜증 / \"공격\": 상대를 깎아내리는 모욕, 위협, 절교·차단 선언\n" +
+        "4) emotion_level: 메시지에 실린 화·분노의 세기. 0(없음) 1(약함) 2(뚜렷함) 3(폭발).\n" +
+        "5) polite_ok: 윗사람에게 보내도 될 만큼 예의 바른 말투인지 true/false.\n" +
+        "6) reason: 다시 생각해 보라고 사용자에게 보여줄 부드러운 존댓말 한 문장(30자 이내). 분위기와 메시지 감정을 근거로.\n" +
+        "중요: 욕이 있다는 사실만으로 공격이나 높은 감정으로 판단하지 마라. 같은 욕이라도 웃으며 주고받는 장난인지, " +
+        "다툼 중에 홧김에 하는 말인지를 대화 흐름(웃음 표현, 서로 탓하는지, 상대의 마지막 반응)으로 구분해라.\n" +
+        "JSON만 출력: {\"relation\":\"\",\"atmosphere\":\"\",\"intent\":\"\",\"emotion_level\":0,\"polite_ok\":true,\"reason\":\"\"}"
 
     private const val CONVERT_FORMAL =
         "너는 한국어 메시지 말투 변환기다. 사용자의 문장을 선생님·상사·부모님 같은 윗사람에게 보내도 " +
@@ -88,12 +93,16 @@ object Llm {
             val v = try {
                 if (s == null) null else {
                     val o = JSONObject(s)
-                    Verdict(
-                        o.optBoolean("lock", false),
-                        o.optString("reason", ""),
-                        o.optString("relation", ""),
-                        o.optString("mood", "")
-                    )
+                    val aiRel = o.optString("relation", "")
+                    // 사용자가 방 모드를 직접 정했으면 그걸 따르고, 아니면 AI가 윗사람이라고 본 경우도 윗사람으로.
+                    val formal = i.formal || (!i.relationFixed && aiRel == "윗사람")
+                    val atm = o.optString("atmosphere", "평범").ifBlank { "평범" }
+                    val intent = o.optString("intent", "일상").ifBlank { "일상" }
+                    val level = o.optInt("emotion_level", 0).coerceIn(0, 3)
+                    val politeOk = o.optBoolean("polite_ok", true)
+                    val lock = Judge.decide(formal, atm, intent, level, politeOk, i.sens)
+                    val reason = o.optString("reason", "").ifBlank { Judge.reasonFor(formal, atm, intent, politeOk) }
+                    Verdict(lock, if (lock) reason else "", if (formal) "윗사람" else "친구", atm, intent, level)
                 }
             } catch (_: Exception) { null }
             onDone(v)

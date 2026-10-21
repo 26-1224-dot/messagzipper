@@ -3,24 +3,36 @@ package kr.messazipper.demo
 /** 화면에서 읽은 대화 한 줄. mine = 내가 보낸 말풍선(오른쪽). */
 data class ChatLine(val mine: Boolean, val text: String)
 
-/** 판정에 필요한 재료: 보낼 문장 + 최근 대화 + 상대 유형 */
+/**
+ * 판정에 필요한 재료: 보낼 문장 + 최근 대화 + 상대 유형.
+ * relationFixed = 사용자가 이 방의 모드를 직접 정해 둠(AI가 관계를 바꾸지 않음)
+ */
 data class JudgeInput(
     val text: String,
     val lines: List<ChatLine>,
     val formal: Boolean,
     val room: String,
-    val sens: Int
+    val sens: Int,
+    val relationFixed: Boolean = false
 ) {
-    fun key() = "$formal|$sens|${lines.lastOrNull()?.text}|$text"
+    fun key() = "$formal|$sens|${lines.takeLast(3).joinToString("/") { it.text }}|$text"
 }
 
-/** 판정 결과. relation: 친구/윗사람, mood: 장난/평온/갈등/격앙 */
-data class Verdict(val lock: Boolean, val reason: String, val relation: String, val mood: String)
-
 /**
- * 기기 안에서만 도는 규칙 판정. API 키가 없거나 인터넷이 안 될 때 쓰인다.
- * 친구 사이에서는 '욕이 있냐'가 아니라 '감정이 얼마나 격한가'를 점수로 본다.
+ * 판정 결과. 두 단계를 따로 판단한 뒤 표(decide)로 합친다.
+ *  atmosphere : 보내기 직전까지의 대화 분위기  — 편한 장난 / 평범 / 긴장 / 다툼
+ *  intent     : 보내려는 메시지의 성격          — 장난 / 일상 / 거친말 / 불만 / 공격
+ *  level      : 메시지에 실린 화의 세기 0~3
  */
+data class Verdict(
+    val lock: Boolean,
+    val reason: String,
+    val relation: String,
+    val atmosphere: String,
+    val intent: String,
+    val level: Int
+)
+
 object Judge {
     private val SEVERE = Regex("(죽어|죽을래|꺼져|닥쳐|시발|씨발|ㅅㅂ|병신|ㅂㅅ|새끼|미친놈|미친년|개같)")
     private val MILD = Regex("(멍청\\S*|바보|등신|놈아|한심\\S*|짜증나|돌았|찌질\\S*)")
@@ -28,9 +40,8 @@ object Judge {
     private val FORMAL_END = Regex("(니다|세요|까요|해요|예요|이에요|에요|드려요|요)[.!?~]*$")
     private val SHORT_OK = Regex("^(네|넵|예|감사합니다|알겠습니다|죄송합니다)[.!~]*$")
 
-    // 감정이 격해졌을 때 나오는 말들
     private val THREAT = Regex("(죽여|죽어|죽을래|뒤질래|뒤져|꺼져|닥쳐|차단|연락\\s?하지\\s?마|다시는|다신|절교|헤어지자|헤어져|끝이야|끝내자|두고\\s?봐|가만\\s?안\\s?둬|후회할|신고할)")
-    private val BLAME = Regex("(너\\s?때문|니\\s?때문|니가\\s?뭔데|네가\\s?뭔데|그따위|어이없|짜증|열받|빡치|빡쳐|개빡|화나|화났|미쳤냐|미쳤어|정신\\s?차려|실망|최악|역겨|진짜\\s?싫|싫어\\s?진짜)")
+    private val BLAME = Regex("(너\\s?때문|니\\s?때문|니가\\s?뭔데|네가\\s?뭔데|그따위|어이없|짜증|열받|빡치|빡쳐|개빡|화나|화났|미쳤냐|미쳤어|정신\\s?차려|실망|최악|역겨|진짜\\s?싫|싫어\\s?진짜|서운)")
     private val LAUGH = Regex("(ㅋ{2,}|ㅎ{2,}|😂|🤣|😆|장난|농담)")
     private val PUNCT = Regex("(!{2,}|\\?{2,}|\\?!|!\\?|ㅡㅡ|;;)")
     private val CONFLICT = Regex("(미안|사과|화났|화나|왜\\s?그래|짜증|열받|빡치|싸우|서운|실망|어이없|그만해|됐어|몰라|너\\s?때문|헤어|차단)")
@@ -39,7 +50,7 @@ object Judge {
 
     fun isHonorific(s: String) = FORMAL_END.containsMatchIn(s.trim())
 
-    /** 윗사람용 규칙. @param sens 0 낮음 / 1 보통 / 2 높음 */
+    /** 윗사람에게 보내도 될 만큼 예의 바른지 보는 규칙. @param sens 0 낮음 / 1 보통 / 2 높음 */
     fun judge(text: String, formal: Boolean, sens: Int): Result {
         val t = text.trim()
         if (t.isEmpty() || SHORT_OK.matches(t)) return Result(false, "")
@@ -53,57 +64,82 @@ object Judge {
         return Result(false, "")
     }
 
-    /** 대화 맥락까지 보고 판단하는 규칙 버전. */
-    fun judgeContext(i: JudgeInput): Verdict {
-        val t = i.text.trim()
-        val rel = if (i.formal) "윗사람" else "친구"
-        if (t.isEmpty() || SHORT_OK.matches(t)) return Verdict(false, "", rel, "평온")
-
-        if (i.formal) {
-            val r = judge(t, true, i.sens)
-            return Verdict(r.lock, r.reason, rel, if (r.lock) "무례" else "평온")
+    /**
+     * 잠글지 말지 정하는 표. AI 판단이든 기기 규칙 판단이든 마지막엔 이 표 하나로 결정한다.
+     *
+     *  [윗사람]  예의에 어긋나거나(politeOk=false) 거친말·불만·공격이면 잠금
+     *  [친구]    분위기        | 잠그는 경우
+     *            편한 장난      | 공격이면서 화가 폭발(3)했을 때만
+     *            평범          | 공격(화 2 이상) / 불만(화 3)
+     *            긴장          | 공격 / 불만(화 2 이상) / 거친말(화 3)
+     *            다툼          | 공격 / 불만 / 거친말(화가 조금이라도 실리면)
+     *  민감도 낮음이면 기준 화 세기 +1, 높음이면 -1
+     */
+    fun decide(formal: Boolean, atmosphere: String, intent: String, level: Int, politeOk: Boolean, sens: Int): Boolean {
+        if (formal) return !politeOk || intent == "공격" || intent == "불만" || intent == "거친말"
+        val s = when (sens) { 0 -> 1; 2 -> -1; else -> 0 }
+        return when (atmosphere) {
+            "편한 장난" -> intent == "공격" && level >= 3 + s
+            "다툼" -> intent == "공격" || ((intent == "불만" || intent == "거친말") && level >= 1 + s)
+            "긴장" -> intent == "공격" || (intent == "불만" && level >= 2 + s) || (intent == "거친말" && level >= 3 + s)
+            else -> (intent == "공격" && level >= 2 + s) || (intent == "불만" && level >= 3 + s)
         }
+    }
 
-        // 친구 사이: 욕 자체가 아니라 감정의 세기를 본다.
-        var heat = 0
-        heat += THREAT.findAll(t).count() * 2
-        heat += SEVERE.findAll(t).count()
-        heat += BLAME.findAll(t).count()
+    /** 1단계: 보내기 직전까지의 대화 분위기 */
+    fun atmosphereOf(lines: List<ChatLine>): String {
+        val recent = lines.takeLast(8)
+        val laugh = recent.count { LAUGH.containsMatchIn(it.text) }
+        val conflict = recent.count { CONFLICT.containsMatchIn(it.text) && !LAUGH.containsMatchIn(it.text) }
+        val theirLast = recent.lastOrNull { !it.mine }?.text ?: ""
+        val theirAngry = theirLast.isNotEmpty() && !LAUGH.containsMatchIn(theirLast) &&
+            (SEVERE.containsMatchIn(theirLast) || BLAME.containsMatchIn(theirLast) || THREAT.containsMatchIn(theirLast))
+        return when {
+            conflict >= 2 || (theirAngry && conflict >= 1) -> "다툼"
+            conflict == 1 || theirAngry -> "긴장"
+            laugh >= 2 -> "편한 장난"
+            else -> "평범"
+        }
+    }
+
+    /** 2단계: 보내려는 메시지 자체의 성격과 화의 세기 */
+    fun messageOf(text: String): Pair<String, Int> {
+        val t = text.trim()
+        var heat = THREAT.findAll(t).count() * 2 + SEVERE.findAll(t).count() + BLAME.findAll(t).count()
         if (PUNCT.containsMatchIn(t)) heat += 1
         if (t.length > 60 && (SEVERE.containsMatchIn(t) || BLAME.containsMatchIn(t))) heat += 1
         val laughing = LAUGH.containsMatchIn(t)
         if (laughing) heat -= 2
-
-        val recent = i.lines.takeLast(6)
-        val conflict = recent.count { CONFLICT.containsMatchIn(it.text) && !LAUGH.containsMatchIn(it.text) }
-        val banter = recent.count { LAUGH.containsMatchIn(it.text) }
-        val theirAngry = recent.lastOrNull { !it.mine }?.let {
-            (SEVERE.containsMatchIn(it.text) || BLAME.containsMatchIn(it.text) || THREAT.containsMatchIn(it.text)) &&
-                !LAUGH.containsMatchIn(it.text)
-        } ?: false
-
-        if (heat > 0) {
-            heat += minOf(conflict, 2)          // 다투는 중이면 더 위험
-            if (theirAngry) heat += 1           // 상대도 화가 나 있으면 더 위험
-            if (banter >= 2 && conflict == 0) heat -= 1   // 웃으면서 놀던 중이면 덜 위험
+        val level = when { heat <= 0 -> 0; heat == 1 -> 1; heat <= 3 -> 2; else -> 3 }
+        val intent = when {
+            !laughing && (THREAT.containsMatchIn(t) || heat >= 4) -> "공격"
+            !laughing && BLAME.containsMatchIn(t) -> "불만"
+            laughing -> "장난"
+            SEVERE.containsMatchIn(t) || MILD.containsMatchIn(t) -> "거친말"
+            else -> "일상"
         }
+        return intent to level
+    }
 
-        val threshold = when (i.sens) { 0 -> 4; 2 -> 2; else -> 3 }
-        val mood = when {
-            heat >= threshold -> "격앙"
-            conflict > 0 -> "갈등"
-            banter > 0 || laughing -> "장난"
-            else -> "평온"
-        }
-        if (heat >= threshold) {
-            val reason = when {
-                THREAT.containsMatchIn(t) -> "홧김에 관계를 끊는 말을 하려는 것 같아요"
-                conflict > 0 || theirAngry -> "다투는 중에 감정이 격해진 것 같아요"
-                else -> "감정이 많이 실린 메시지 같아요"
-            }
-            return Verdict(true, reason, rel, mood)
-        }
-        return Verdict(false, "", rel, mood)
+    /** 기기 안 규칙 판단(API 키가 없거나 인터넷이 안 될 때) */
+    fun judgeContext(i: JudgeInput): Verdict {
+        val t = i.text.trim()
+        val rel = if (i.formal) "윗사람" else "친구"
+        val atmosphere = atmosphereOf(i.lines)
+        if (t.isEmpty() || SHORT_OK.matches(t)) return Verdict(false, "", rel, atmosphere, "일상", 0)
+        val (intent, level) = messageOf(t)
+        val politeOk = !judge(t, true, i.sens).lock
+        val lock = decide(i.formal, atmosphere, intent, level, politeOk, i.sens)
+        return Verdict(lock, if (lock) reasonFor(i.formal, atmosphere, intent, politeOk) else "", rel, atmosphere, intent, level)
+    }
+
+    fun reasonFor(formal: Boolean, atmosphere: String, intent: String, politeOk: Boolean): String = when {
+        formal && !politeOk -> "윗사람에게 보내기엔 말투가 맞지 않아요"
+        formal -> "윗사람에게 상처가 될 수 있는 말이에요"
+        intent == "공격" && atmosphere == "다툼" -> "다투는 중에 홧김에 하는 말 같아요"
+        intent == "공격" -> "상대에게 상처를 줄 수 있는 말이에요"
+        atmosphere == "다툼" || atmosphere == "긴장" -> "분위기가 날카로운데 감정이 실린 말이에요"
+        else -> "감정이 많이 실린 메시지 같아요"
     }
 
     /** 인터넷 없이 쓰는 윗사람용 간단 변환. 단순 치환이라 어색할 수 있다. */

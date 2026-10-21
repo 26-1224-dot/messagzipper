@@ -31,7 +31,6 @@ class ZipperService : AccessibilityService() {
     private var lastInput: JudgeInput? = null
 
     private var lastRoomTitle: String? = null
-    private var manualRoom: String? = null    // 사용자가 직접 모드를 바꾼 방
     private var deciding = false
     private var lastPlace = 0L
 
@@ -61,7 +60,7 @@ class ZipperService : AccessibilityService() {
     private val NUM_OR_TIME = Regex("^\\d+$|^(오전|오후)\\s?\\d{1,2}:\\d{2}$|^\\d{1,2}:\\d{2}$")
     private var pendingTitle: String? = null
     private var lastTitleCheck = 0L
-    private val checkRoomTask = Runnable { checkRoom() }
+    private val checkRoomTask = Runnable { checkRoom(force = false) }
 
     /** 화면 맨 위 제목줄(뒤로가기 버튼 옆)에 있는 이름을 읽는다. */
     private fun readRoomTitle(): String? {
@@ -90,32 +89,72 @@ class ZipperService : AccessibilityService() {
         return bestText
     }
 
-    /** 같은 이름이 두 번 연속 읽히면 방이 바뀐 것으로 확정한다(잘못 읽는 순간에 흔들리지 않게). */
-    private fun checkRoom() {
+    private var roomEnteredAt = 0L
+    private val forcedCheck = Runnable { checkRoom(force = true) }
+    private val forcedCheck2 = Runnable { checkRoom(force = true) }
+    private val forcedCheck3 = Runnable { checkRoom(force = true) }
+
+    /**
+     * 방이 바뀌었는지 확인.
+     * force=true  : 화면 전환 직후(확실한 신호) → 읽히는 즉시 확정
+     * force=false : 평소 화면 갱신 중 → 같은 이름이 두 번 연속 읽혀야 확정(잘못 읽어 흔들리지 않게)
+     */
+    private fun checkRoom(force: Boolean) {
         lastTitleCheck = SystemClock.uptimeMillis()
         val title = readRoomTitle() ?: return
-        if (title == lastRoomTitle) { pendingTitle = null; return }
-        if (pendingTitle != title) { pendingTitle = title; main.postDelayed(checkRoomTask, 350); return }
+        if (title == lastRoomTitle) {
+            pendingTitle = null
+            // 방에 막 들어온 직후엔 대화가 늦게 그려지므로, 저장된 모드가 없으면 대화 말투로 한 번 더 판단
+            if (Prefs.roomMode(this, title) == null && lastTitleCheck - roomEnteredAt < 1500) applyAutoMode(title)
+            return
+        }
+        if (!force && pendingTitle != title) { pendingTitle = title; main.postDelayed(checkRoomTask, 250); return }
         pendingTitle = null
         lastRoomTitle = title
+        roomEnteredAt = lastTitleCheck
         resetRoom()
-        if (manualRoom != title) Prefs.setFormal(this, guessFormal(title))
+        val saved = Prefs.roomMode(this, title)
+        if (saved != null) Prefs.setFormal(this, saved) else applyAutoMode(title)
         overlay.showFab(Prefs.formal(this), title)
+    }
+
+    /** 이름 단서 + 이 방에서 내가 계속 존댓말을 쓰는지로 자동 판정 */
+    private fun applyAutoMode(title: String) {
+        val formal = guessFormal(title) || honorificConversation(currentLines())
+        if (formal != Prefs.formal(this)) {
+            Prefs.setFormal(this, formal)
+            cache.clear()
+        }
+        overlay.showFab(formal, title)
     }
 
     private fun guessFormal(title: String): Boolean {
         val t = title.trim()
-        if (t.isEmpty()) return Prefs.formal(this)
+        if (t.isEmpty()) return false
         return formalHints.containsMatchIn(t) || t.endsWith("님")
+    }
+
+    private fun honorificConversation(lines: List<ChatLine>): Boolean {
+        val mine = lines.filter { it.mine }.takeLast(5)
+        val hon = mine.count { Judge.isHonorific(it.text) }
+        return mine.size >= 2 && hon * 10 >= mine.size * 7
+    }
+
+    private fun currentLines(): List<ChatLine> {
+        val b = Rect()
+        inputNode?.getBoundsInScreen(b)
+        val inputTop = if (b.isEmpty) resources.displayMetrics.heightPixels else b.top
+        return ChatReader.read(rootInActiveWindow, inputTop, screenW, dp(96), lastRoomTitle)
     }
 
     override fun onServiceConnected() {
         overlay = Overlay(this)
         overlay.onToggleMode = {
-            Prefs.setFormal(this, !Prefs.formal(this))
-            manualRoom = lastRoomTitle
+            val f = !Prefs.formal(this)
+            Prefs.setFormal(this, f)
+            lastRoomTitle?.let { Prefs.setRoomMode(this, it, f) }   // 이 방은 앞으로 이 모드로 기억
             cache.clear()
-            overlay.showFab(Prefs.formal(this), lastRoomTitle)
+            overlay.showFab(f, lastRoomTitle)
         }
         overlay.onGateTap = { x, y -> onSendTapped(x, y) }
         overlay.onZipTap = { openLockPanel() }
@@ -138,14 +177,17 @@ class ZipperService : AccessibilityService() {
 
         when (e.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                // 화면이 바뀌면 화면이 다 그려진 뒤 제목줄의 상대 이름을 읽는다.
+                // 화면이 바뀌면 제목줄을 여러 번(빨리 → 다 그려진 뒤) 읽어서 바로 반영한다.
                 main.removeCallbacks(checkRoomTask)
-                main.postDelayed(checkRoomTask, 300)
+                main.removeCallbacks(forcedCheck); main.removeCallbacks(forcedCheck2); main.removeCallbacks(forcedCheck3)
+                main.postDelayed(forcedCheck, 120)
+                main.postDelayed(forcedCheck2, 450)
+                main.postDelayed(forcedCheck3, 1000)
             }
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onTextChanged(e)
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 val now = SystemClock.uptimeMillis()
-                if (now - lastTitleCheck > 900) checkRoom()
+                if (now - lastTitleCheck > 500) checkRoom(force = false)
                 if (lockedText == null && now - lastPlace > 300) {
                     lastPlace = now
                     if (inputNode == null) recoverInput()
@@ -286,16 +328,9 @@ class ZipperService : AccessibilityService() {
         inputNode?.getBoundsInScreen(b)
         val inputTop = if (b.isEmpty) Int.MAX_VALUE else b.top
         val lines = ChatReader.read(rootInActiveWindow, inputTop, screenW, dp(96), lastRoomTitle)
-        return JudgeInput(text, lines, effectiveFormal(lines), lastRoomTitle ?: "", Prefs.sens(this))
-    }
-
-    /** 방 제목·수동 설정 + 대화에서 내가 계속 존댓말을 쓰는지까지 보고 윗사람 여부를 정한다. */
-    private fun effectiveFormal(lines: List<ChatLine>): Boolean {
-        if (Prefs.formal(this)) return true
-        if (manualRoom != null && manualRoom == lastRoomTitle) return false
-        val mine = lines.filter { it.mine }.takeLast(5)
-        val hon = mine.count { Judge.isHonorific(it.text) }
-        return mine.size >= 2 && hon * 10 >= mine.size * 7
+        val saved = lastRoomTitle?.let { Prefs.roomMode(this, it) }
+        val formal = saved ?: (Prefs.formal(this) || honorificConversation(lines))
+        return JudgeInput(text, lines, formal, lastRoomTitle ?: "", Prefs.sens(this), relationFixed = saved != null)
     }
 
     private fun requestVerdict(input: JudgeInput, cb: (Verdict) -> Unit) {
@@ -323,10 +358,10 @@ class ZipperService : AccessibilityService() {
         val v = verdict ?: return
         val formal = lastInput?.formal ?: Prefs.formal(this)
         val rel = v.relation.ifBlank { if (formal) "윗사람" else "친구" }
-        val mood = v.mood.ifBlank { "격앙" }
+        val dots = "●".repeat(v.level) + "○".repeat(3 - v.level)
         overlay.showLockPanel(
             reason = v.reason.ifBlank { "보내기 전에 한 번만 더 생각해 볼까요?" },
-            mood = "상대: $rel · 대화 분위기: $mood",
+            mood = "상대: $rel · 대화 분위기: ${v.atmosphere} · 이 메시지: ${v.intent} · 감정 세기 $dots",
             convertLabel = if (formal || rel == "윗사람") "존댓말로" else "차분하게",
             onConvert = { convertFlow() },
             onRewrite = { unlock(sendAfter = false, allow = false) },
@@ -398,6 +433,7 @@ class ZipperService : AccessibilityService() {
 
     private fun leaveApp() {
         main.removeCallbacks(checkRoomTask)
+        main.removeCallbacks(forcedCheck); main.removeCallbacks(forcedCheck2); main.removeCallbacks(forcedCheck3)
         pendingTitle = null
         resetRoom()
         overlay.hideAll()

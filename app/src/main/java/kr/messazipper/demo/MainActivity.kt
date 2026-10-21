@@ -98,16 +98,23 @@ class MainActivity : Activity() {
             )
             if (k.isEmpty()) {
                 val v = Judge.judgeContext(sample)
-                testOut.text = "키 없음 → 기기 규칙 판단: ${if (v.lock) "🔒 잠금" else "통과"} (${v.mood}) ${v.reason}"
+                testOut.text = "키 없음 → 기기 규칙 판단: ${if (v.lock) "🔒 잠금" else "통과"}\n" +
+                    "분위기 ${v.atmosphere} · 메시지 ${v.intent} · 감정 ${v.level}/3\n${v.reason}"
             } else {
                 testOut.text = "AI에게 물어보는 중…"
                 Llm.judge(k, sample) { v ->
                     testOut.text = if (v == null) "⚠️ AI 연결 실패 (키나 인터넷을 확인해 주세요)"
-                    else "✅ AI 판단: ${if (v.lock) "🔒 잠금" else "통과"} · 상대 ${v.relation} · 분위기 ${v.mood}\n${v.reason}"
+                    else "✅ AI 판단: ${if (v.lock) "🔒 잠금" else "통과"} · 상대 ${v.relation}\n" +
+                        "분위기 ${v.atmosphere} · 메시지 ${v.intent} · 감정 ${v.level}/3\n${v.reason}"
                 }
             }
         })
         root.addView(testOut)
+
+        root.addView(button("방별로 기억한 모드 초기화") {
+            Prefs.clearRoomModes(this)
+            Toast.makeText(this, "모든 방을 다시 자동 판별해요", Toast.LENGTH_SHORT).show()
+        })
 
         root.addView(TextView(this).apply {
             textSize = 12f
