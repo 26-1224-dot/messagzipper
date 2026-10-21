@@ -112,7 +112,7 @@ class ZipperService : AccessibilityService() {
         var backSure = false
         var hasInput = false
         val texts = ArrayList<TextNode>()
-        fun visit(n: AccessibilityNodeInfo?, depth: Int) {
+        fun visit(n: AccessibilityNodeInfo?, depth: Int, inScroll: Boolean) {
             if (n == null || depth > 35) return
             if (depth > 0 && !n.isVisibleToUser) return
             val b = Rect()
@@ -121,7 +121,8 @@ class ZipperService : AccessibilityService() {
             // 제목줄 = 상태바 바로 아래 ~ 72dp. 그 아래(대화 영역)는 스크롤로 말풍선이 올라와도 보지 않는다.
             val barTop = statusBarH - dp(8)
             val barBottom = statusBarH + dp(72)
-            if (b.height() > 0 && b.top >= barTop && b.bottom <= barBottom) {
+            val scroll = inScroll || n.isScrollable   // 말풍선은 전부 스크롤되는 대화 목록 안에 있다
+            if (!scroll && b.height() > 0 && b.top >= barTop && b.bottom <= barBottom) {
                 val desc = n.contentDescription?.toString()?.trim() ?: ""
                 val text = n.text?.toString()?.trim() ?: ""
                 val looksBack = desc.contains("뒤로") || desc.contains("Back", true) || desc.contains("Navigate up", true) || desc.contains("이전")
@@ -141,9 +142,9 @@ class ZipperService : AccessibilityService() {
             }
             // 위쪽 15% 아래는 입력칸만 찾으면 되므로, 이미 찾았으면 더 내려가지 않는다
             if (depth > 0 && b.height() > 0 && b.top > sh * 0.15f && hasInput) return
-            for (k in 0 until n.childCount) visit(n.getChild(k), depth + 1)
+            for (k in 0 until n.childCount) visit(n.getChild(k), depth + 1, scroll)
         }
-        visit(root, 0)
+        visit(root, 0, false)
         return TopScan(back, texts, hasInput)
     }
 
@@ -194,38 +195,43 @@ class ZipperService : AccessibilityService() {
         forcedChecks.forEach { (d, r) -> main.removeCallbacks(r); main.postDelayed(r, d) }
     }
 
+    /**
+     * 방 확인 규칙
+     *  - 방에 들어올 때 처음 읽은 이름으로 윗사람/친구를 정하고, 그 방에 있는 동안은 절대 바꾸지 않는다.
+     *  - 입력칸·뒤로 버튼이 안 보이면(채팅 목록 등) 방을 나간 것 → 다음에 들어가는 방에서 새로 읽는다.
+     */
     private fun checkRoom() {
-        val now = SystemClock.uptimeMillis()
-        lastTitleCheck = now
-        val title = readRoomTitle()
-        val recentlyChanged = now - lastScreenChange < 2500
-        // 스크롤 등 화면 안에서의 변화로는 방이 바뀌지 않는다. 이미 방을 알고 있으면 그대로 유지.
-        if (lastRoomTitle != null && !recentlyChanged && title != lastRoomTitle) {
-            if (title == null && !inRoom && ++nullReads >= 2) {
-                resetRoom(); lastRoomTitle = null; curMode = null; overlay.hideFab()
-            }
+        lastTitleCheck = SystemClock.uptimeMillis()
+        val title = readRoomTitle()   // inRoom 도 같이 갱신됨
+
+        if (lastRoomTitle != null) {
+            if (inRoom) { nullReads = 0; return }          // 방 안 → 그대로 유지
+            if (++nullReads >= 2) exitRoom()               // 두 번 연속 방 밖 → 나간 것
             return
         }
+
+        // 아직 방을 모름(방 밖이었거나 막 들어옴)
         if (title == null) {
             if (inRoom) {
-                // 채팅방인데 이름만 못 읽음 → 버튼은 띄워서(길게 눌러 원인 확인 가능) 기본 친구 모드
                 nullReads = 0
-                if (lastRoomTitle == null) {      // 이미 아는 방이면 잠깐 못 읽어도 그대로 유지
-                    if (curMode == null) curMode = false
-                    overlay.showFabUnknown()
-                }
+                if (curMode == null) curMode = false
+                overlay.showFabUnknown()
             } else if (++nullReads >= 2) {
-                // 채팅방 밖(목록 등) → 모드 버튼 숨김
-                if (lastRoomTitle != null) resetRoom()
-                lastRoomTitle = null
                 curMode = null
                 overlay.hideFab()
             }
             return
         }
         nullReads = 0
-        if (title == lastRoomTitle) return
-        enterRoom(title, clear = lastRoomTitle != null)
+        enterRoom(title, clear = false)
+    }
+
+    private fun exitRoom() {
+        resetRoom()
+        lastRoomTitle = null
+        curMode = null
+        nullReads = 0
+        overlay.hideFab()
     }
 
     private fun enterRoom(title: String, clear: Boolean) {
@@ -459,8 +465,8 @@ class ZipperService : AccessibilityService() {
 
         deciding = true
         // 누른 바로 그 순간 방 이름을 화면에서 새로 읽어 확인한다(방 전환을 놓쳤어도 여기서 바로잡힘).
-        val fresh = readRoomTitle()
-        if (fresh != null && fresh != lastRoomTitle) enterRoom(fresh, clear = false)
+        // 방을 아직 모를 때만 지금 읽어서 정한다(이미 정해진 방은 바꾸지 않음)
+        if (lastRoomTitle == null) readRoomTitle()?.let { enterRoom(it, clear = false) }
         val input = gather(text)
         var done = false
         val finish: (Verdict) -> Unit = { v ->
