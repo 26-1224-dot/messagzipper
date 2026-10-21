@@ -94,9 +94,8 @@ object Llm {
             val v = try {
                 if (s == null) null else {
                     val o = JSONObject(s)
-                    val aiRel = o.optString("relation", "")
                     // 사용자가 방 모드를 직접 정했으면 그걸 따르고, 아니면 AI가 윗사람이라고 본 경우도 윗사람으로.
-                    val formal = i.formal || (!i.relationFixed && aiRel == "윗사람")
+                    val formal = i.formal   // 관계는 방 이름·직접 설정·내 존댓말로만 정함(AI 추측으로 바꾸지 않음)
                     val atm = o.optString("atmosphere", "평범").ifBlank { "평범" }
                     val intent = o.optString("intent", "일상").ifBlank { "일상" }
                     val level = o.optInt("emotion_level", 0).coerceIn(0, 3)
