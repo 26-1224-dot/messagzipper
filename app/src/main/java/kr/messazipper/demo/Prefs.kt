@@ -26,9 +26,17 @@ object Prefs {
         sp(c).edit().putInt("room:$title", if (formal) 1 else 0).apply()
     fun clearRoomModes(c: Context) {
         val e = sp(c).edit()
-        sp(c).all.keys.filter { it.startsWith("room:") }.forEach { e.remove(it) }
+        sp(c).all.keys.filter { it.startsWith("room:") || it.startsWith("ai:") }.forEach { e.remove(it) }
         e.apply()
     }
+
+    /** AI가 방 이름을 보고 내린 판단(한 번 물어보면 저장해 두고 다음부턴 즉시 사용) */
+    fun aiRelation(c: Context, title: String): Boolean? {
+        val v = sp(c).getInt("ai:$title", -1)
+        return if (v < 0) null else v == 1
+    }
+    fun setAiRelation(c: Context, title: String, formal: Boolean) =
+        sp(c).edit().putInt("ai:$title", if (formal) 1 else 0).apply()
 
     fun apiKey(c: Context) = sp(c).getString("apikey", "") ?: ""
     fun setApiKey(c: Context, v: String) = sp(c).edit().putString("apikey", v.trim()).apply()

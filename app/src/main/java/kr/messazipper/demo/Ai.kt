@@ -109,6 +109,22 @@ object Llm {
         }
     }
 
+    private const val NAME_SYS =
+        "너는 한국 고등학생의 메신저 채팅방 이름을 보고, 그 상대가 '윗사람'인지 '친구'인지 판단한다.\n" +
+        "윗사람: 선생님·사감·교수·부모님(엄마, 아빠 포함)·조부모·친척 어른·목사님 등 교회 어른·선배·직장 상사처럼 존댓말을 써야 하는 사람, " +
+        "또는 그런 사람들이 있는 공식 단체방(예: 교사 공지방, 학부모방).\n" +
+        "친구: 친구·또래·동생·후배, 별명이나 이름만 저장된 사람, 반 단톡·동아리·기숙사 친구들 단체방.\n" +
+        "이름만 보고 애매하면 '친구'로 답한다.\n" +
+        "JSON만 출력: {\"relation\": \"윗사람\" 또는 \"친구\"}"
+
+    /** 채팅방 이름만 보고 윗사람인지 판단. 결과: true=윗사람, false=친구, null=실패 */
+    fun classifyName(apiKey: String, name: String, onDone: (Boolean?) -> Unit) {
+        call(apiKey, NAME_SYS, "채팅방 이름: $name", true) { s ->
+            val r = try { if (s == null) null else JSONObject(s).optString("relation", "") } catch (_: Exception) { null }
+            onDone(when (r) { "윗사람" -> true; "친구" -> false; else -> null })
+        }
+    }
+
     fun convert(apiKey: String, i: JudgeInput, onDone: (String?) -> Unit) {
         val sys = if (i.formal) CONVERT_FORMAL else CONVERT_CALM
         call(apiKey, sys, describe(i) + "\n\n위 '보내려는 메시지'를 바꿔 줘.", false) { s ->

@@ -51,45 +51,49 @@ class ZipperService : AccessibilityService() {
 
     /** 채팅방 제목(상대 이름)에 윗사람 단서가 있으면 윗사람 모드로. */
     private val formalHints = Regex(
-        "(선생님|쌤|담임|교생|교수|교감|교장|목사|전도사|사모|과장|부장|팀장|실장|차장|대리|이사|주임|" +
-        "사장|대표|회장|원장|관장|감독|코치|교관|국장|처장|선배|" +
-        "어머니|아버지|엄마|아빠|할머니|할아버지|이모|고모|삼촌|작은아버지|큰아버지)"
+        "(선생|쌤|사감|담임|교생|교수|교감|교장|목사|전도사|사모|장로|권사|집사|과장|부장|팀장|실장|차장|대리|이사|주임|" +
+        "사장|대표|회장|원장|관장|감독|코치|교관|국장|처장|선배|형님|누님|박사|" +
+        "어머니|아버지|어머님|아버님|엄마|아빠|할머니|할아버지|할매|할배|이모|고모|삼촌|외삼촌|숙모|이모부|고모부|작은아버지|큰아버지)"
     )
 
     // ───────── 방(상대) 인식 ─────────
-    // 원칙: 화면이 바뀌는 순간 이전 방의 상태는 전부 버린다.
-    //       모드는 '전역 설정'이 아니라 '지금 방'에 대해서만 계산하고,
-    //       전송 버튼을 누른 순간 방 이름과 대화를 화면에서 새로 읽어 다시 확인한다.
+    // 원칙: 윗사람/친구는 '왼쪽 위 상대 이름'만 보고 정한다(API 키가 있으면 AI가 이름을 보고 판단).
+    //       대화 내용은 친구 사이 분위기 판단용으로만 쓴다.
     private val NUM_OR_TIME = Regex("^\\d+$|^(오전|오후)\\s?\\d{1,2}:\\d{2}$|^\\d{1,2}:\\d{2}$")
+    private val ICON_WORDS = Regex("^(뒤로|뒤로 가기|검색|통화|전화|메뉴|더보기|서랍|설정|Back|Search|Call|Menu|More).*", RegexOption.IGNORE_CASE)
     private val NON_ROOM = setOf(
         "채팅", "친구", "오픈채팅", "더보기", "쇼핑", "뷰", "지갑", "Chats", "Friends",
         "메시지", "Messages", "요청", "검색"
     )
-    private var pendingTitle: String? = null
     private var lastTitleCheck = 0L
     private var roomEnteredAt = 0L
-    private var curMode: Boolean? = null   // 지금 방이 윗사람이면 true, 친구면 false, 아직 모르면 null
-    private val checkRoomTask = Runnable { checkRoom(force = false) }
-    private val forcedChecks = listOf(0L, 100L, 250L, 500L, 900L, 1600L).map { d -> d to Runnable { checkRoom(force = true) } }
+    private var curMode: Boolean? = null   // 지금 방이 윗사람이면 true, 친구면 false, 모르면 null
+    private var inRoom = false             // 지금 채팅방 화면인지(입력칸이 보이는지)
+    private var nullReads = 0
+    private var eventTitle: String? = null // 카톡이 화면 전환 때 알려 준 화면 제목
+    private var eventClass: String? = null
+    private var lastHow = ""               // 방 이름을 어떤 방법으로 읽었는지(진단용)
+    private val aiAsking = HashSet<String>()
+    private val checkRoomTask = Runnable { checkRoom() }
+    private val forcedChecks = listOf(0L, 100L, 250L, 500L, 900L, 1600L).map { d -> d to Runnable { checkRoom() } }
 
     private val statusBarH: Int by lazy {
         val id = resources.getIdentifier("status_bar_height", "dimen", "android")
         if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
     }
 
-    private data class TextNode(val text: String, val id: String, val rect: Rect)
+    private data class TextNode(val text: String, val id: String, val rect: Rect, val fromDesc: Boolean = false)
 
     private fun textsIn(root: AccessibilityNodeInfo, top: Int, bottom: Int): List<TextNode> {
         val out = ArrayList<TextNode>()
         fun visit(n: AccessibilityNodeInfo?, depth: Int) {
-            if (n == null || depth > 25) return
-            // 카톡은 방에 들어가도 뒤에 채팅 목록 화면을 '안 보이게' 남겨 둔다 → 안 보이는 건 통째로 무시
+            if (n == null || depth > 30) return
             if (depth > 0 && !n.isVisibleToUser) return
             val b = Rect()
             n.getBoundsInScreen(b)
-            if (depth > 0 && b.height() > 0 && b.top > bottom) return   // 제목줄보다 아래에 있는 덩어리는 통째로 건너뜀
+            if (depth > 0 && b.height() > 0 && b.top > bottom) return
             val t = n.text?.toString()?.trim()
-            if (!t.isNullOrEmpty() && !n.isEditable && t.length <= 30 && !NUM_OR_TIME.matches(t)) {
+            if (!t.isNullOrEmpty() && !n.isEditable && t.length <= 40 && !NUM_OR_TIME.matches(t)) {
                 if (b.height() > 0 && b.top >= top && b.bottom <= bottom) out.add(TextNode(t, n.viewIdResourceName ?: "", b))
             }
             for (k in 0 until n.childCount) visit(n.getChild(k), depth + 1)
@@ -98,64 +102,106 @@ class ZipperService : AccessibilityService() {
         return out
     }
 
-    /** 상태바 바로 아래 제목줄(높이 약 64dp)에 있는 글자 = 방 이름. 카톡/인스타 화면일 때만 읽는다. */
+    /** 화면 위쪽(상단 15%)을 한 번 훑어서 뒤로 버튼, 글자들, 아래쪽 입력칸 유무를 같이 모은다. */
+    private class TopScan(val back: Rect?, val texts: List<TextNode>, val hasInput: Boolean)
+
+    private fun scanTop(root: AccessibilityNodeInfo): TopScan {
+        val sw = screenW
+        val sh = resources.displayMetrics.heightPixels
+        var back: Rect? = null
+        var backSure = false
+        var hasInput = false
+        val texts = ArrayList<TextNode>()
+        fun visit(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 35) return
+            if (depth > 0 && !n.isVisibleToUser) return
+            val b = Rect()
+            n.getBoundsInScreen(b)
+            if (n.isEditable && b.top > sh * 0.35f) hasInput = true
+            if (b.height() > 0 && b.top < sh * 0.15f) {
+                val desc = n.contentDescription?.toString()?.trim() ?: ""
+                val text = n.text?.toString()?.trim() ?: ""
+                val looksBack = desc.contains("뒤로") || desc.contains("Back", true) || desc.contains("Navigate up", true) || desc.contains("이전")
+                if (text.isEmpty() && (n.isClickable || looksBack) && b.left < sw * 0.12f && b.width() in 1..(sw / 5) && b.height() < dp(80)) {
+                    val cur = back
+                    if (cur == null || (looksBack && !backSure) || (looksBack == backSure && b.top < cur.top)) {
+                        back = Rect(b); backSure = looksBack
+                    }
+                }
+                if (!n.isEditable) {
+                    if (text.isNotEmpty() && text.length <= 40 && !NUM_OR_TIME.matches(text)) {
+                        texts.add(TextNode(text, n.viewIdResourceName ?: "", Rect(b)))
+                    } else if (text.isEmpty() && desc.isNotEmpty() && desc.length <= 40 && !ICON_WORDS.matches(desc) && !n.isClickable) {
+                        texts.add(TextNode(desc, n.viewIdResourceName ?: "", Rect(b), fromDesc = true))
+                    }
+                }
+            }
+            // 위쪽 15% 아래는 입력칸만 찾으면 되므로, 이미 찾았으면 더 내려가지 않는다
+            if (depth > 0 && b.height() > 0 && b.top > sh * 0.15f && hasInput) return
+            for (k in 0 until n.childCount) visit(n.getChild(k), depth + 1)
+        }
+        visit(root, 0)
+        return TopScan(back, texts, hasInput)
+    }
+
     /**
-     * 방 이름 읽기: 왼쪽 위 '← 뒤로' 버튼을 먼저 찾고, 그 버튼과 같은 줄 오른쪽에 있는 글자를 방 이름으로 본다.
-     * 채팅 목록 화면에는 뒤로 버튼이 없으므로 null(= 채팅방 아님).
-     * 화면에 실제로 보이는 것만 본다(뒤에 숨은 목록 화면은 무시).
+     * 왼쪽 위 상대 이름 읽기 — 세 가지 방법을 차례로 시도한다.
+     *  ① '← 뒤로' 버튼과 같은 줄 오른쪽 글자
+     *  ② 카톡이 '제목(title)'이라고 표시해 둔 맨 위 글자
+     *  ③ 화면 전환 때 카톡이 알려 준 화면 제목
      */
     private fun readRoomTitle(): String? {
         val root = rootInActiveWindow ?: return null
         if (root.packageName?.toString() !in targets) return null
+        val s = scanTop(root)
+        inRoom = s.hasInput || s.back != null
         val sw = screenW
-        val sh = resources.displayMetrics.heightPixels
-        var back: Rect? = null
-        val texts = ArrayList<TextNode>()
-        fun visit(n: AccessibilityNodeInfo?, depth: Int) {
-            if (n == null || depth > 30) return
-            if (depth > 0 && !n.isVisibleToUser) return
-            val b = Rect()
-            n.getBoundsInScreen(b)
-            if (depth > 0 && b.height() > 0 && b.top > sh * 0.2f) return   // 화면 위쪽만 본다
-            if (b.height() > 0 && b.top < sh * 0.15f) {
-                val desc = n.contentDescription?.toString() ?: ""
-                val looksBack = desc.contains("뒤로") || desc.contains("Back", true) || desc.contains("Navigate up", true)
-                if ((n.isClickable || looksBack) && b.left < sw * 0.12f && b.width() in 1..(sw / 5) && b.height() < dp(80) &&
-                    n.text.isNullOrEmpty()) {
-                    val cur = back
-                    if (cur == null || looksBack || b.top < cur.top) back = Rect(b)
-                }
-                val t = n.text?.toString()?.trim()
-                if (!t.isNullOrEmpty() && !n.isEditable && t.length <= 40 && !NUM_OR_TIME.matches(t)) {
-                    texts.add(TextNode(t, n.viewIdResourceName ?: "", Rect(b)))
-                }
+        val bk = s.back
+        if (bk != null) {
+            val row = s.texts.filter {
+                it.rect.centerY() in (bk.top - dp(10))..(bk.bottom + dp(10)) && it.rect.left >= bk.right - dp(6) && it.rect.left < sw * 0.78f
             }
-            for (k in 0 until n.childCount) visit(n.getChild(k), depth + 1)
+            val pick = row.filter { !it.fromDesc }.minWithOrNull(compareBy({ it.rect.left }, { it.rect.top }))
+                ?: row.minWithOrNull(compareBy({ it.rect.left }, { it.rect.top }))
+            if (pick != null) { lastHow = "① 뒤로 버튼 옆"; return clean(pick.text) }
         }
-        visit(root, 0)
-        val bk = back ?: return null
-        return texts
-            .filter { it.rect.centerY() in (bk.top - dp(6))..(bk.bottom + dp(6)) && it.rect.left >= bk.right - dp(4) && it.rect.left < sw * 0.75f }
-            .minWithOrNull(compareBy({ it.rect.left }, { it.rect.top }))
-            ?.text
+        val byId = s.texts.filter { it.id.contains("title", true) && !it.fromDesc }
+            .minWithOrNull(compareBy({ it.rect.top }, { it.rect.left }))
+        if (byId != null && s.hasInput) { lastHow = "② 제목 표시"; return clean(byId.text) }
+        val et = eventTitle
+        if (s.hasInput && !et.isNullOrBlank() && et !in NON_ROOM && et != "카카오톡" && et != "KakaoTalk" && et != "Instagram") {
+            lastHow = "③ 화면 제목"; return clean(et)
+        }
+        lastHow = "못 읽음"
+        return null
     }
 
-    /** 화면 바뀜 신호: 아무것도 지우지 않고 방 이름만 다시 읽어 본다. 이름이 실제로 달라졌을 때만 새 방으로 처리. */
-    private fun onScreenChanged() {
+    /** 단톡 인원수("26 벼락기도반 22"의 22) 같은 꼬리 숫자 정리 */
+    private fun clean(t: String) = t.trim().replace(Regex("\\s+\\d{1,4}$"), "").trim()
+
+    /** 화면 바뀜 신호: 아무것도 지우지 않고 방 이름만 여러 번 빠르게 다시 읽는다. */
+    private fun onScreenChanged(e: AccessibilityEvent) {
+        val t = (e.text?.joinToString(" ") ?: "").trim()
+        if (t.isNotEmpty() && t.length <= 40) eventTitle = t
+        eventClass = e.className?.toString()
         main.removeCallbacks(checkRoomTask)
         forcedChecks.forEach { (d, r) -> main.removeCallbacks(r); main.postDelayed(r, d) }
     }
 
-    private var nullReads = 0
-
-    private fun checkRoom(@Suppress("UNUSED_PARAMETER") force: Boolean) {
+    private fun checkRoom() {
         val now = SystemClock.uptimeMillis()
         lastTitleCheck = now
         val title = readRoomTitle()
         if (title == null) {
-            // 뒤로 버튼이 두 번 연속 안 보이면 채팅방 밖(목록 등) → 모드 버튼 숨김
-            if (++nullReads >= 2 && lastRoomTitle != null) {
-                resetRoom()
+            if (inRoom) {
+                // 채팅방인데 이름만 못 읽음 → 버튼은 띄워서(길게 눌러 원인 확인 가능) 기본 친구 모드
+                nullReads = 0
+                if (lastRoomTitle != null) { resetRoom(); lastRoomTitle = null }
+                if (curMode == null) curMode = false
+                overlay.showFabUnknown()
+            } else if (++nullReads >= 2) {
+                // 채팅방 밖(목록 등) → 모드 버튼 숨김
+                if (lastRoomTitle != null) resetRoom()
                 lastRoomTitle = null
                 curMode = null
                 overlay.hideFab()
@@ -163,45 +209,52 @@ class ZipperService : AccessibilityService() {
             return
         }
         nullReads = 0
-        if (title == lastRoomTitle) {
-            // 들어온 직후엔 대화가 늦게 그려지므로, 저장된 모드가 없으면 대화 말투로 다시 판단
-            if (Prefs.roomMode(this, title) == null && now - roomEnteredAt < 2500) {
-                curMode = modeFor(title, currentLines())
-                overlay.showFab(curMode == true, title)
-            }
-            return
-        }
-        enterRoom(title, clear = lastRoomTitle != null)   // 뒤로 버튼 기준이라 믿을 수 있으므로 바로 확정
+        if (title == lastRoomTitle) return
+        enterRoom(title, clear = lastRoomTitle != null)
     }
 
     private fun enterRoom(title: String, clear: Boolean) {
-        pendingTitle = null
         if (clear) resetRoom() else cache.clear()
         lastRoomTitle = title
         roomEnteredAt = SystemClock.uptimeMillis()
-        if (title in NON_ROOM) {          // 채팅 목록 같은 화면 → 방이 아님
+        if (title in NON_ROOM) {
             curMode = null
             overlay.hideFab()
             return
         }
-        curMode = modeFor(title, currentLines())
+        curMode = modeFor(title)
         overlay.showFab(curMode == true, title)
+        askAiAboutName(title)
     }
 
-    /** 이 방의 모드: 직접 정해 둔 게 있으면 그것, 없으면 이름 단서 또는 내가 존댓말을 쓰는지 */
-    private fun modeFor(title: String, lines: List<ChatLine>): Boolean =
-        Prefs.roomMode(this, title) ?: (guessFormal(title) || honorificConversation(lines))
+    /**
+     * 이 방의 모드 = ① 직접 정해 둔 모드 → ② AI가 이름을 보고 내린 판단(저장해 둠) → ③ 이름 단서(빠른 임시 판단)
+     * 대화 내용은 쓰지 않는다.
+     */
+    private fun modeFor(title: String): Boolean =
+        Prefs.roomMode(this, title) ?: Prefs.aiRelation(this, title) ?: guessFormal(title)
+
+    /** API 키가 있으면 이름을 AI에게 한 번만 물어보고 저장. 답이 오면 즉시 반영. */
+    private fun askAiAboutName(title: String) {
+        val key = Prefs.apiKey(this)
+        if (key.isEmpty() || Prefs.roomMode(this, title) != null || Prefs.aiRelation(this, title) != null) return
+        if (!aiAsking.add(title)) return
+        Llm.classifyName(key, title) { formal ->
+            aiAsking.remove(title)
+            if (formal == null) return@classifyName
+            Prefs.setAiRelation(this, title, formal)
+            if (lastRoomTitle == title && Prefs.roomMode(this, title) == null && curMode != formal) {
+                curMode = formal
+                cache.clear()
+                overlay.showFab(formal, title)
+            }
+        }
+    }
 
     private fun guessFormal(title: String): Boolean {
         val t = title.trim()
         if (t.isEmpty()) return false
         return formalHints.containsMatchIn(t) || t.endsWith("님")
-    }
-
-    private fun honorificConversation(lines: List<ChatLine>): Boolean {
-        val mine = lines.filter { it.mine }.takeLast(5)
-        val hon = mine.count { Judge.isHonorific(it.text) }
-        return mine.size >= 2 && hon * 10 >= mine.size * 7
     }
 
     private fun chatTop() = statusBarH + dp(64)
@@ -217,20 +270,26 @@ class ZipperService : AccessibilityService() {
     private fun showDiagnostics() {
         val root = rootInActiveWindow
         val sb = StringBuilder()
-        sb.append("읽은 방 이름: ").append(readRoomTitle() ?: "(못 읽음)").append('\n')
-        sb.append("현재 모드: ").append(when (curMode) { true -> "윗사람"; false -> "친구"; else -> "모름" })
-        sb.append(if (lastRoomTitle != null && Prefs.roomMode(this, lastRoomTitle!!) != null) " (직접 지정)" else " (자동)").append('\n')
-        sb.append("상태바 높이: ").append(statusBarH).append("px\n\n화면 위쪽 글자들:\n")
+        val title = readRoomTitle()
+        sb.append("읽은 이름: ").append(title ?: "(못 읽음)").append("  [").append(lastHow).append("]\n")
+        val src = when {
+            title == null -> "-"
+            Prefs.roomMode(this, title) != null -> "직접 지정"
+            Prefs.aiRelation(this, title) != null -> "AI 판단"
+            else -> "이름 단서"
+        }
+        sb.append("모드: ").append(when (curMode) { true -> "윗사람"; false -> "친구"; else -> "모름" }).append(" (").append(src).append(")\n")
+        sb.append("화면 전환 제목: ").append(eventTitle ?: "-").append(" / ").append(eventClass?.substringAfterLast('.') ?: "-").append('\n')
         if (root != null) {
-            val sh = resources.displayMetrics.heightPixels
-            textsIn(root, 0, (sh * 0.2f).toInt()).sortedBy { it.rect.top }.take(8).forEach {
-                sb.append("· ").append(it.text).append("  [y=").append(it.rect.top).append(", ")
+            val s = scanTop(root)
+            sb.append("뒤로 버튼: ").append(s.back?.let { "x=${it.left}~${it.right}, y=${it.top}~${it.bottom}" } ?: "못 찾음")
+                .append(" · 입력칸: ").append(if (s.hasInput) "있음" else "없음").append("\n\n위쪽 글자들:\n")
+            s.texts.sortedBy { it.rect.top }.take(8).forEach {
+                sb.append("· ").append(it.text).append(if (it.fromDesc) " (설명)" else "")
+                    .append("  [x=").append(it.rect.left).append(", y=").append(it.rect.top).append(", ")
                     .append(it.id.substringAfter(":id/", "-")).append("]\n")
             }
         }
-        val lines = currentLines()
-        sb.append("\n읽은 대화 ").append(lines.size).append("줄 (마지막 4줄):\n")
-        lines.takeLast(4).forEach { sb.append(if (it.mine) "[나] " else "[상대] ").append(it.text.take(30)).append('\n') }
         overlay.showInfo("메세지퍼 인식 상태", sb.toString())
     }
 
@@ -267,11 +326,11 @@ class ZipperService : AccessibilityService() {
         if (!Prefs.enabled(this)) { leaveApp(); return }
 
         when (e.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> onScreenChanged()
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> onScreenChanged(e)
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onTextChanged(e)
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 val now = SystemClock.uptimeMillis()
-                if (now - lastTitleCheck > 250) checkRoom(force = false)
+                if (now - lastTitleCheck > 250) checkRoom()
                 if (lockedText == null && now - lastPlace > 300) {
                     lastPlace = now
                     if (inputNode == null) recoverInput()
@@ -281,7 +340,8 @@ class ZipperService : AccessibilityService() {
         }
         val t = lastRoomTitle
         val m = curMode
-        if (t != null && m != null) overlay.showFab(m, t)   // 채팅방이 아니면(t == null) 모드 버튼을 띄우지 않음
+        if (t != null && m != null) overlay.showFab(m, t)
+        else if (t == null && inRoom) overlay.showFabUnknown()   // 채팅방인데 이름만 못 읽음
     }
 
     private fun onTextChanged(e: AccessibilityEvent) {
@@ -424,7 +484,7 @@ class ZipperService : AccessibilityService() {
         val title = lastRoomTitle
         val saved = title?.let { Prefs.roomMode(this, it) }
         // 지금 방에 대해서만 계산(이전 방의 모드를 절대 끌고 오지 않음)
-        val formal = if (title != null) modeFor(title, lines) else honorificConversation(lines)
+        val formal = if (title != null) modeFor(title) else (curMode == true)   // 관계는 이름으로만
         curMode = formal
         return JudgeInput(text, lines, formal, title ?: "", Prefs.sens(this), relationFixed = saved != null)
     }
@@ -530,7 +590,6 @@ class ZipperService : AccessibilityService() {
     private fun leaveApp() {
         main.removeCallbacks(checkRoomTask)
         forcedChecks.forEach { (_, r) -> main.removeCallbacks(r) }
-        pendingTitle = null
         resetRoom()
         overlay.hideAll()
         lastRoomTitle = null

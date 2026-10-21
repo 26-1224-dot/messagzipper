@@ -114,6 +114,9 @@ class Overlay(private val svc: AccessibilityService) {
             if (formal) "#E61E3A5F" else "#E6455A64")
     }
 
+    /** 채팅방인데 상대 이름을 못 읽었을 때(길게 눌러 원인 확인) */
+    fun showFabUnknown() = setFab("unknown", "❓ 이름 못 읽음 · 친구 모드", "#E6707A82")
+
     /** 방이 바뀌어서 상대를 다시 확인하는 중 */
     fun showFabChecking() = setFab("checking", "🔍 방 확인 중", "#E6707A82")
 
