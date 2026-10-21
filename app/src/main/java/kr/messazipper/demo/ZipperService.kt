@@ -118,7 +118,10 @@ class ZipperService : AccessibilityService() {
             val b = Rect()
             n.getBoundsInScreen(b)
             if (n.isEditable && b.top > sh * 0.35f) hasInput = true
-            if (b.height() > 0 && b.top < sh * 0.15f) {
+            // 제목줄 = 상태바 바로 아래 ~ 72dp. 그 아래(대화 영역)는 스크롤로 말풍선이 올라와도 보지 않는다.
+            val barTop = statusBarH - dp(8)
+            val barBottom = statusBarH + dp(72)
+            if (b.height() > 0 && b.top >= barTop && b.bottom <= barBottom) {
                 val desc = n.contentDescription?.toString()?.trim() ?: ""
                 val text = n.text?.toString()?.trim() ?: ""
                 val looksBack = desc.contains("뒤로") || desc.contains("Back", true) || desc.contains("Navigate up", true) || desc.contains("이전")
@@ -180,7 +183,10 @@ class ZipperService : AccessibilityService() {
     private fun clean(t: String) = t.trim().replace(Regex("\\s+\\d{1,4}$"), "").trim()
 
     /** 화면 바뀜 신호: 아무것도 지우지 않고 방 이름만 여러 번 빠르게 다시 읽는다. */
+    private var lastScreenChange = 0L
+
     private fun onScreenChanged(e: AccessibilityEvent) {
+        lastScreenChange = SystemClock.uptimeMillis()
         val t = (e.text?.joinToString(" ") ?: "").trim()
         if (t.isNotEmpty() && t.length <= 40) eventTitle = t
         eventClass = e.className?.toString()
@@ -192,13 +198,22 @@ class ZipperService : AccessibilityService() {
         val now = SystemClock.uptimeMillis()
         lastTitleCheck = now
         val title = readRoomTitle()
+        val recentlyChanged = now - lastScreenChange < 2500
+        // 스크롤 등 화면 안에서의 변화로는 방이 바뀌지 않는다. 이미 방을 알고 있으면 그대로 유지.
+        if (lastRoomTitle != null && !recentlyChanged && title != lastRoomTitle) {
+            if (title == null && !inRoom && ++nullReads >= 2) {
+                resetRoom(); lastRoomTitle = null; curMode = null; overlay.hideFab()
+            }
+            return
+        }
         if (title == null) {
             if (inRoom) {
                 // 채팅방인데 이름만 못 읽음 → 버튼은 띄워서(길게 눌러 원인 확인 가능) 기본 친구 모드
                 nullReads = 0
-                if (lastRoomTitle != null) { resetRoom(); lastRoomTitle = null }
-                if (curMode == null) curMode = false
-                overlay.showFabUnknown()
+                if (lastRoomTitle == null) {      // 이미 아는 방이면 잠깐 못 읽어도 그대로 유지
+                    if (curMode == null) curMode = false
+                    overlay.showFabUnknown()
+                }
             } else if (++nullReads >= 2) {
                 // 채팅방 밖(목록 등) → 모드 버튼 숨김
                 if (lastRoomTitle != null) resetRoom()
