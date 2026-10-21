@@ -16,6 +16,19 @@ class ZipperService : AccessibilityService() {
 
     private val targets = setOf("com.kakao.talk", "com.instagram.android")
     private val sendLabels = listOf("전송", "보내기", "Send")
+    private var lastRoomTitle: String? = null
+
+    /** 채팅방 제목(상대 이름)에 윗사람스러운 단서가 있으면 자동으로 윗사람 모드로 전환한다. */
+    private val formalHints = Regex(
+        "(선생님|교수|교감|교장|목사|전도사|사모|과장|부장|팀장|실장|차장|대리|이사|" +
+        "사장|대표|회장|원장|관장|감독|코치|지도|교관|국장|처장|학생회장|반장|" +
+        "어머니|아버지|할머니|할아버지|이모|고모|삼촌|작은아버지|큰아버지)"
+    )
+    private fun guessFormal(title: String): Boolean {
+        val t = title.trim()
+        if (t.isEmpty()) return Prefs.formal(this)
+        return formalHints.containsMatchIn(t) || t.endsWith("님")
+    }
 
     override fun onServiceConnected() {
         overlay = Overlay(this)
@@ -36,9 +49,21 @@ class ZipperService : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
         val pkg = e.packageName?.toString() ?: return
         if (pkg !in targets || !Prefs.enabled(this)) {
+            // 카톡/인스타 DM 밖으로 나가면(홈 화면, 다른 앱 등) 오버레이를 전부 숨긴다.
             overlay.hideAll()
+            lastRoomTitle = null
             return
         }
+
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // 채팅방(또는 DM방)이 바뀔 때마다 방 제목으로 상대가 윗사람인지 자동 추정한다.
+            val title = (e.text?.joinToString(" ") ?: "").trim()
+            if (title.isNotEmpty() && title != lastRoomTitle) {
+                lastRoomTitle = title
+                Prefs.setFormal(this, guessFormal(title))
+            }
+        }
+
         overlay.showFab(Prefs.formal(this))
 
         if (e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
