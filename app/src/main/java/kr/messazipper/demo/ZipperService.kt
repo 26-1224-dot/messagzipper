@@ -110,18 +110,8 @@ class ZipperService : AccessibilityService() {
         return pick(textsIn(root, 0, (sh * 0.13f).toInt()))?.text
     }
 
-    /** 화면이 바뀌었다 = 이전 방 상태를 전부 버리고, 새 방 이름을 여러 번에 걸쳐 확실히 읽는다. */
-    private var prevTitle: String? = null
-    private var invalidatedAt = 0L
-
-    private fun invalidateRoom() {
-        if (lastRoomTitle != null) prevTitle = lastRoomTitle
-        invalidatedAt = SystemClock.uptimeMillis()
-        lastRoomTitle = null
-        curMode = null
-        pendingTitle = null
-        resetRoom()
-        overlay.showFabChecking()
+    /** 화면 바뀜 신호: 아무것도 지우지 않고 방 이름만 다시 읽어 본다. 이름이 실제로 달라졌을 때만 새 방으로 처리. */
+    private fun onScreenChanged() {
         main.removeCallbacks(checkRoomTask)
         forcedChecks.forEach { (d, r) -> main.removeCallbacks(r); main.postDelayed(r, d) }
     }
@@ -130,8 +120,6 @@ class ZipperService : AccessibilityService() {
         val now = SystemClock.uptimeMillis()
         lastTitleCheck = now
         val title = readRoomTitle() ?: return
-        // 전환 직후 0.35초 안에 '직전 방 이름'이 읽히면 아직 이전 화면이 남아 있는 것 → 무시하고 다음 확인을 기다림
-        if (lastRoomTitle == null && title == prevTitle && now - invalidatedAt < 350) return
         if (title == lastRoomTitle) {
             pendingTitle = null
             // 들어온 직후엔 대화가 늦게 그려지므로, 저장된 모드가 없으면 대화 말투로 다시 판단
@@ -239,7 +227,7 @@ class ZipperService : AccessibilityService() {
         if (!Prefs.enabled(this)) { leaveApp(); return }
 
         when (e.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> invalidateRoom()
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> onScreenChanged()
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onTextChanged(e)
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 val now = SystemClock.uptimeMillis()
@@ -253,10 +241,8 @@ class ZipperService : AccessibilityService() {
         }
         val t = lastRoomTitle
         val m = curMode
-        when {
-            t == null -> overlay.showFabChecking()
-            m != null -> overlay.showFab(m, t)
-        }
+        if (t == null) overlay.showFab(m == true, null)
+        else if (m != null) overlay.showFab(m, t)
     }
 
     private fun onTextChanged(e: AccessibilityEvent) {
@@ -352,6 +338,8 @@ class ZipperService : AccessibilityService() {
     // ───────── 전송 버튼을 누른 순간 ─────────
     private fun onSendTapped(x: Float, y: Float) {
         if (deciding) return
+        val node = inputNode?.takeIf { it.refresh() } ?: run { inputNode = null; recoverInput(); inputNode }
+        if (node != null) currentText = if (node.isShowingHintText) "" else (node.text?.toString() ?: "")
         val text = currentText
         if (text.isBlank() || text == allowedText) { overlay.passThrough(x, y); return }
 
