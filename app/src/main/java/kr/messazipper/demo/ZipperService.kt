@@ -104,7 +104,7 @@ class ZipperService : AccessibilityService() {
         if (root.packageName?.toString() !in targets) return null
         fun pick(list: List<TextNode>) = list
             .filter { it.rect.left >= dp(20) && it.rect.left < screenW * 0.7f }
-            .minByOrNull { (if (it.id.contains("title", true)) 0 else 1000) - it.rect.height() * 3 + it.rect.left / 8 }
+            .minByOrNull { it.rect.top - it.rect.height() * 3 + it.rect.left / 8 }   // 제목줄에서 가장 크고 위에 있는 글자
         val band = textsIn(root, statusBarH - dp(4), statusBarH + dp(72))
         pick(band)?.let { return it.text }
         // 제목줄을 못 찾으면 화면 위쪽 11% 안에서 다시 찾는다.
