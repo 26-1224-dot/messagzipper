@@ -121,6 +121,30 @@ object Judge {
         return intent to level
     }
 
+    /**
+     * 즉시 결정: 확실한 경우만 답하고, 애매하면 null(→ AI 판단을 기다림).
+     * 대부분의 평범한 메시지는 여기서 바로 통과해서 전송이 지연되지 않는다.
+     */
+    fun quickVerdict(i: JudgeInput): Verdict? {
+        val t = i.text.trim()
+        val rel = if (i.formal) "윗사람" else "친구"
+        val atmosphere = atmosphereOf(i.lines)
+        if (t.isEmpty() || SHORT_OK.matches(t)) return Verdict(false, "", rel, atmosphere, "일상", 0)
+        val (intent, level) = messageOf(t)
+        val politeOk = !judge(t, true, i.sens).lock
+        if (i.formal) {
+            if (politeOk && intent == "일상" && level == 0) return Verdict(false, "", rel, atmosphere, intent, 0)
+            if (SEVERE.containsMatchIn(t) || intent == "공격")
+                return Verdict(true, reasonFor(true, atmosphere, intent, politeOk), rel, atmosphere, intent, level)
+            return null
+        }
+        if ((intent == "일상" || intent == "장난") && level == 0 && atmosphere != "다툼")
+            return Verdict(false, "", rel, atmosphere, intent, 0)
+        if (intent == "공격" && level >= 3)
+            return Verdict(true, reasonFor(false, atmosphere, intent, politeOk), rel, atmosphere, intent, level)
+        return null
+    }
+
     /** 기기 안 규칙 판단(API 키가 없거나 인터넷이 안 될 때) */
     fun judgeContext(i: JudgeInput): Verdict {
         val t = i.text.trim()

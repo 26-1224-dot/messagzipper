@@ -61,6 +61,7 @@ object Llm {
                 val body = JSONObject().apply {
                     put("model", "gpt-4o-mini")
                     put("temperature", 0.2)
+                    put("max_tokens", 150)
                     if (json) put("response_format", JSONObject().put("type", "json_object"))
                     put("messages", JSONArray().apply {
                         put(JSONObject().put("role", "system").put("content", system))

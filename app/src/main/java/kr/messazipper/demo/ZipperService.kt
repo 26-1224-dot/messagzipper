@@ -70,7 +70,7 @@ class ZipperService : AccessibilityService() {
     private var roomEnteredAt = 0L
     private var curMode: Boolean? = null   // 지금 방이 윗사람이면 true, 친구면 false, 아직 모르면 null
     private val checkRoomTask = Runnable { checkRoom(force = false) }
-    private val forcedChecks = listOf(150L, 500L, 1000L, 1800L).map { d -> d to Runnable { checkRoom(force = true) } }
+    private val forcedChecks = listOf(0L, 100L, 250L, 500L, 900L, 1600L).map { d -> d to Runnable { checkRoom(force = true) } }
 
     private val statusBarH: Int by lazy {
         val id = resources.getIdentifier("status_bar_height", "dimen", "android")
@@ -83,10 +83,11 @@ class ZipperService : AccessibilityService() {
         val out = ArrayList<TextNode>()
         fun visit(n: AccessibilityNodeInfo?, depth: Int) {
             if (n == null || depth > 25) return
+            val b = Rect()
+            n.getBoundsInScreen(b)
+            if (depth > 0 && b.height() > 0 && b.top > bottom) return   // 제목줄보다 아래에 있는 덩어리는 통째로 건너뜀
             val t = n.text?.toString()?.trim()
             if (!t.isNullOrEmpty() && !n.isEditable && t.length <= 30 && !NUM_OR_TIME.matches(t)) {
-                val b = Rect()
-                n.getBoundsInScreen(b)
                 if (b.height() > 0 && b.top >= top && b.bottom <= bottom) out.add(TextNode(t, n.viewIdResourceName ?: "", b))
             }
             for (k in 0 until n.childCount) visit(n.getChild(k), depth + 1)
@@ -110,7 +111,12 @@ class ZipperService : AccessibilityService() {
     }
 
     /** 화면이 바뀌었다 = 이전 방 상태를 전부 버리고, 새 방 이름을 여러 번에 걸쳐 확실히 읽는다. */
+    private var prevTitle: String? = null
+    private var invalidatedAt = 0L
+
     private fun invalidateRoom() {
+        if (lastRoomTitle != null) prevTitle = lastRoomTitle
+        invalidatedAt = SystemClock.uptimeMillis()
         lastRoomTitle = null
         curMode = null
         pendingTitle = null
@@ -124,6 +130,8 @@ class ZipperService : AccessibilityService() {
         val now = SystemClock.uptimeMillis()
         lastTitleCheck = now
         val title = readRoomTitle() ?: return
+        // 전환 직후 0.35초 안에 '직전 방 이름'이 읽히면 아직 이전 화면이 남아 있는 것 → 무시하고 다음 확인을 기다림
+        if (lastRoomTitle == null && title == prevTitle && now - invalidatedAt < 350) return
         if (title == lastRoomTitle) {
             pendingTitle = null
             // 들어온 직후엔 대화가 늦게 그려지므로, 저장된 모드가 없으면 대화 말투로 다시 판단
@@ -269,7 +277,7 @@ class ZipperService : AccessibilityService() {
         main.removeCallbacks(prejudge)
         if (t.isBlank()) { overlay.hideGate(); return }
         placeGate()
-        if (Prefs.apiKey(this).isNotEmpty()) main.postDelayed(prejudge, 600)
+        if (Prefs.apiKey(this).isNotEmpty()) main.postDelayed(prejudge, 350)
     }
 
     private fun recoverInput() {
@@ -364,8 +372,10 @@ class ZipperService : AccessibilityService() {
                 }
             }
         }
+        // 누가 봐도 괜찮은 일상 메시지 / 누가 봐도 위험한 메시지는 AI를 기다리지 않고 바로 결정
+        Judge.quickVerdict(input)?.let { finish(it); return }
         val timeout = Runnable { finish(Judge.judgeContext(input)) }
-        main.postDelayed(timeout, 4500)
+        main.postDelayed(timeout, 3000)
         requestVerdict(input) { v ->
             main.removeCallbacks(timeout)
             finish(v)
