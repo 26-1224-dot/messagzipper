@@ -49,7 +49,7 @@ class Overlay(private val svc: AccessibilityService) {
     var onUnlockSwipe: (() -> Unit)? = null
 
     private var fab: TextView? = null
-    private var fabFormal: Boolean? = null
+    private var fabKey: String? = null
     private var gate: View? = null
     private var gateParams: WindowManager.LayoutParams? = null
     private var zip: ZipView? = null
@@ -75,7 +75,8 @@ class Overlay(private val svc: AccessibilityService) {
     }
 
     // ───────── 모드 표시 버튼(친구 ↔ 윗사람) ─────────
-    fun showFab(formal: Boolean) {
+    /** 모드 + 읽어 낸 상대 이름을 같이 보여 준다(이름을 제대로 읽었는지 바로 확인 가능). */
+    fun showFab(formal: Boolean, name: String?) {
         if (fab == null) {
             val t = TextView(svc).apply {
                 textSize = 12f
@@ -86,14 +87,17 @@ class Overlay(private val svc: AccessibilityService) {
                 setOnClickListener { onToggleMode?.invoke() }
             }
             fab = t
-            fabFormal = null
+            fabKey = null
             add(t, lp(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                 dp(8), dp(120), Gravity.TOP or Gravity.END))
         }
-        if (fabFormal == formal) return
-        fabFormal = formal
+        val shortName = name?.trim()?.let { if (it.length > 8) it.take(8) + "…" else it }?.ifBlank { null }
+        val key = "$formal|$shortName"
+        if (fabKey == key) return
+        fabKey = key
         fab?.apply {
-            text = if (formal) "🔒 윗사람 모드" else "🔓 친구 모드"
+            val mode = if (formal) "🔒 윗사람 모드" else "🔓 친구 모드"
+            text = if (shortName != null) "$mode · $shortName" else mode
             background = GradientDrawable().apply {
                 cornerRadius = dp(20).toFloat()
                 setColor(if (formal) Color.parseColor("#E61E3A5F") else Color.parseColor("#E6455A64"))
@@ -101,7 +105,7 @@ class Overlay(private val svc: AccessibilityService) {
         }
     }
 
-    private fun hideFab() { remove(fab); fab = null; fabFormal = null }
+    private fun hideFab() { remove(fab); fab = null; fabKey = null }
 
     // ───────── 투명 게이트(전송 버튼 위에만) ─────────
     fun placeGate(r: Rect) {

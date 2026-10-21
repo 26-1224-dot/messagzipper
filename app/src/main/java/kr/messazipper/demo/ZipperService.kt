@@ -52,10 +52,56 @@ class ZipperService : AccessibilityService() {
 
     /** 채팅방 제목(상대 이름)에 윗사람 단서가 있으면 윗사람 모드로. */
     private val formalHints = Regex(
-        "(선생님|교수|교감|교장|목사|전도사|사모|과장|부장|팀장|실장|차장|대리|이사|" +
-        "사장|대표|회장|원장|관장|감독|코치|교관|국장|처장|" +
+        "(선생님|쌤|담임|교생|교수|교감|교장|목사|전도사|사모|과장|부장|팀장|실장|차장|대리|이사|주임|" +
+        "사장|대표|회장|원장|관장|감독|코치|교관|국장|처장|선배|" +
         "어머니|아버지|엄마|아빠|할머니|할아버지|이모|고모|삼촌|작은아버지|큰아버지)"
     )
+
+    // ───────── 상대 이름(방 제목) 읽기 ─────────
+    private val NUM_OR_TIME = Regex("^\\d+$|^(오전|오후)\\s?\\d{1,2}:\\d{2}$|^\\d{1,2}:\\d{2}$")
+    private var pendingTitle: String? = null
+    private var lastTitleCheck = 0L
+    private val checkRoomTask = Runnable { checkRoom() }
+
+    /** 화면 맨 위 제목줄(뒤로가기 버튼 옆)에 있는 이름을 읽는다. */
+    private fun readRoomTitle(): String? {
+        val root = rootInActiveWindow ?: return null
+        val sh = resources.displayMetrics.heightPixels
+        val sw = screenW
+        var bestScore = Int.MAX_VALUE
+        var bestText: String? = null
+        fun visit(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 25) return
+            val t = n.text?.toString()?.trim()
+            if (!t.isNullOrEmpty() && !n.isEditable && t.length <= 30 && !NUM_OR_TIME.matches(t)) {
+                val b = Rect()
+                n.getBoundsInScreen(b)
+                if (b.height() > 0 && b.top < sh * 0.11f && b.bottom < sh * 0.15f &&
+                    b.left > sw * 0.05f && b.left < sw * 0.6f) {
+                    val id = n.viewIdResourceName ?: ""
+                    val idBonus = if (id.contains("title", true) || id.contains("name", true)) 0 else 1000
+                    val score = idBonus + b.top + b.left / 10
+                    if (score < bestScore) { bestScore = score; bestText = t }
+                }
+            }
+            for (k in 0 until n.childCount) visit(n.getChild(k), depth + 1)
+        }
+        visit(root, 0)
+        return bestText
+    }
+
+    /** 같은 이름이 두 번 연속 읽히면 방이 바뀐 것으로 확정한다(잘못 읽는 순간에 흔들리지 않게). */
+    private fun checkRoom() {
+        lastTitleCheck = SystemClock.uptimeMillis()
+        val title = readRoomTitle() ?: return
+        if (title == lastRoomTitle) { pendingTitle = null; return }
+        if (pendingTitle != title) { pendingTitle = title; main.postDelayed(checkRoomTask, 350); return }
+        pendingTitle = null
+        lastRoomTitle = title
+        resetRoom()
+        if (manualRoom != title) Prefs.setFormal(this, guessFormal(title))
+        overlay.showFab(Prefs.formal(this), title)
+    }
 
     private fun guessFormal(title: String): Boolean {
         val t = title.trim()
@@ -69,7 +115,7 @@ class ZipperService : AccessibilityService() {
             Prefs.setFormal(this, !Prefs.formal(this))
             manualRoom = lastRoomTitle
             cache.clear()
-            overlay.showFab(Prefs.formal(this))
+            overlay.showFab(Prefs.formal(this), lastRoomTitle)
         }
         overlay.onGateTap = { x, y -> onSendTapped(x, y) }
         overlay.onZipTap = { openLockPanel() }
@@ -92,16 +138,14 @@ class ZipperService : AccessibilityService() {
 
         when (e.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                val title = (e.text?.joinToString(" ") ?: "").trim()
-                if (title.isNotEmpty() && title != lastRoomTitle) {
-                    lastRoomTitle = title
-                    resetRoom()
-                    if (manualRoom != title) Prefs.setFormal(this, guessFormal(title))
-                }
+                // 화면이 바뀌면 화면이 다 그려진 뒤 제목줄의 상대 이름을 읽는다.
+                main.removeCallbacks(checkRoomTask)
+                main.postDelayed(checkRoomTask, 300)
             }
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onTextChanged(e)
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 val now = SystemClock.uptimeMillis()
+                if (now - lastTitleCheck > 900) checkRoom()
                 if (lockedText == null && now - lastPlace > 300) {
                     lastPlace = now
                     if (inputNode == null) recoverInput()
@@ -109,7 +153,7 @@ class ZipperService : AccessibilityService() {
                 }
             }
         }
-        overlay.showFab(Prefs.formal(this))
+        overlay.showFab(Prefs.formal(this), lastRoomTitle)
     }
 
     private fun onTextChanged(e: AccessibilityEvent) {
@@ -353,6 +397,8 @@ class ZipperService : AccessibilityService() {
     }
 
     private fun leaveApp() {
+        main.removeCallbacks(checkRoomTask)
+        pendingTitle = null
         resetRoom()
         overlay.hideAll()
         lastRoomTitle = null
