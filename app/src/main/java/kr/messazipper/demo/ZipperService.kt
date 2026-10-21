@@ -35,8 +35,8 @@ class ZipperService : AccessibilityService() {
         overlay.onToggleMode = {
             Prefs.setFormal(this, !Prefs.formal(this))
             overlay.showFab(Prefs.formal(this))
-            evaluate(currentText)
         }
+        overlay.onSendAttempt = { shouldLock() }
         overlay.onCoverTap = { openLockPanel() }
         overlay.onUnlockSwipe = {
             // 지퍼를 왼쪽으로 스와이프해서 직접 연 경우 = '그대로 보내기'와 같은 동작
@@ -73,25 +73,21 @@ class ZipperService : AccessibilityService() {
             // 입력칸이 비어 있을 때 힌트 문구가 text 로 잡히는 경우를 걸러낸다.
             val t = if (node.isShowingHintText) "" else (node.text?.toString() ?: "")
             currentText = t
-            evaluate(t)
+            // 타이핑하는 동안은 아무 판정도, 아무 화면 변화도 없다 — 전송 버튼이
+            // 있는 자리에 '보이지 않는' 터치 차단판만 계속 떠 있게 해서(실제로
+            // 가로채려면 미리 그 자리를 선점하고 있어야 함), 눌렀을 때만 판정한다.
+            overlay.armGate(findSendBounds())
+            overlay.resetGateVisual()
         }
     }
 
-    private fun evaluate(text: String) {
-        if (text.isBlank() || text == allowedText) {
-            overlay.hideCover()
-            return
-        }
+    /** 게이트를 탭한(=전송을 시도한) 바로 그 순간 딱 한 번만 호출된다. */
+    private fun shouldLock(): Boolean {
+        val text = currentText
+        if (text.isBlank() || text == allowedText) return false
         val r = Judge.judge(text, Prefs.formal(this), Prefs.sens(this))
-        if (r.lock) {
-            lastReason = r.reason
-            // 같은 잠금이 이미 떠 있으면(타이핑을 계속하는 중) 다시 만들지 않는다 —
-            // armCover 자체가 중복 생성을 막아 애니메이션/드래그 상태를 그대로 둔다.
-            overlay.armCover(findSendBounds())
-        } else {
-            overlay.hideCover()
-            overlay.hidePanel()
-        }
+        if (r.lock) lastReason = r.reason
+        return r.lock
     }
 
     /**

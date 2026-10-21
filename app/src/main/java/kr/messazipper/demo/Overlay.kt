@@ -33,6 +33,13 @@ class Overlay(private val svc: AccessibilityService) {
     var onCoverTap: (() -> Unit)? = null
     /** 지퍼를 왼쪽으로 스와이프해서 직접 풀었을 때(= 그대로 보내기와 같은 동작) */
     var onUnlockSwipe: (() -> Unit)? = null
+    /**
+     * 전송을 시도한(=게이트를 탭한) 바로 그 순간 한 번만 불린다.
+     * true 를 반환하면 잠그고, false 를 반환하면 안전하다는 뜻 — 이땐 바로
+     * 아래 실제 전송 버튼으로 탭을 그대로 흘려보낸다. 타이핑하는 동안에는
+     * 전혀 호출되지 않는다(상시 경보가 아니라 누르는 순간 한 번뿐인 방지턱).
+     */
+    var onSendAttempt: (() -> Boolean)? = null
 
     private var fab: TextView? = null
     private var cover: ZipView? = null
@@ -78,25 +85,32 @@ class Overlay(private val svc: AccessibilityService) {
         }
     }
 
-    // ───────── 전송 버튼 위에 덮이는 지퍼 ─────────
+    // ───────── 전송 버튼 위에 덮이는(평소엔 안 보이는) 게이트 ─────────
     /**
-     * 위험한 문구가 감지되면 바로 호출된다. 전송 버튼을 실제로 누르지 못하게
-     * 막는 '터치 차단'은 이 시점부터 바로 걸려야 하지만, 지퍼가 잠기는
-     * 모습(그래픽)은 아직 보여주지 않는다 — 타이핑 중인데 갑자기 잠긴 것처럼
-     * 보이면 이상하기 때문. 실제로 전송 버튼이 있는 자리를 탭(=전송 시도)할
-     * 때 비로소 zip! 소리와 함께 잠기는 애니메이션이 재생된다.
+     * 카톡/DM 채팅창에 입력칸이 보이는 동안은 계속 이 자리에 '투명한 터치
+     * 차단판'이 떠 있어야 한다 — 실제 전송 버튼을 가로채려면 누르기 전부터
+     * 이미 그 자리를 선점하고 있어야 하기 때문. 하지만 평소엔 아무 그림도
+     * 그리지 않아 타이핑하는 동안은 화면이 전혀 바뀌지 않는다(상시 경보
+     * 아님). 실제로 그 자리를 탭(=전송 시도)하는 그 순간에만 onSendAttempt
+     * 로 지금 문구를 판정해서, 안전하면 그대로 아래 실제 버튼으로 탭을
+     * 흘려보내고, 위험하면 그때 비로소 zip! 소리와 잠그는 애니메이션이
+     * 재생된다.
      */
-    fun armCover(r: Rect) {
-        if (cover != null) return   // 이미 같은 잠금이 떠 있으면 다시 만들지 않는다(애니메이션/드래그 상태 보존)
+    fun armGate(r: Rect) {
+        if (cover != null) return   // 이미 떠 있으면 다시 만들지 않는다(애니메이션/드래그 상태 보존)
         val w = maxOf(r.width(), dp(44))
         val h = maxOf(r.height(), dp(44))
         var dragStartX = 0f
+        var downX = 0f
+        var downY = 0f
         var dragging = false
         val v = ZipView(svc).apply { closeProgress = 0f }
         v.setOnTouchListener { view, ev ->
             val zv = view as ZipView
             when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { dragStartX = ev.rawX; dragging = false; true }
+                MotionEvent.ACTION_DOWN -> {
+                    dragStartX = ev.rawX; downX = ev.rawX; downY = ev.rawY; dragging = false; true
+                }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = ev.rawX - dragStartX
                     // 이미 잠긴(닫힌) 상태에서만 왼쪽으로 끌면 풀리는 중으로 인식한다.
@@ -117,12 +131,19 @@ class Overlay(private val svc: AccessibilityService) {
                             animateProgress(zv, zv.closeProgress, 1f) {}
                         }
                     } else {
-                        // 드래그가 아니면 탭 = 전송을 시도한 것으로 본다.
-                        if (zv.closeProgress < 0.98f) {
-                            playZip(false)
-                            animateProgress(zv, zv.closeProgress, 1f) { onCoverTap?.invoke() }
+                        // 드래그가 아니면 탭 = 지금 막 전송을 시도한 것 — 바로 이 순간에만 판정한다.
+                        val shouldLock = onSendAttempt?.invoke() ?: true
+                        if (shouldLock) {
+                            if (zv.closeProgress < 0.98f) {
+                                playZip(false)
+                                animateProgress(zv, zv.closeProgress, 1f) { onCoverTap?.invoke() }
+                            } else {
+                                onCoverTap?.invoke()
+                            }
                         } else {
-                            onCoverTap?.invoke()
+                            // 안전함: 이 게이트를 치우고, 방금 그 탭을 실제 버튼으로 그대로 흘려보낸다.
+                            hideCover()
+                            tapThrough(downX, downY)
                         }
                     }
                     dragging = false
@@ -135,11 +156,26 @@ class Overlay(private val svc: AccessibilityService) {
         add(v, lp(w, h, r.left, r.top))
     }
 
+    /** 타이핑 중에 이전 잠금 모습(닫힌 지퍼)이 남아 있지 않도록 조용히 되돌린다. */
+    fun resetGateVisual() { cover?.closeProgress = 0f }
+
     fun hasCover() = cover != null
 
     fun hideCover() { remove(cover); cover = null }
 
     private fun playZip(reverse: Boolean) { Thread { SoundFx.playZip(reverse) }.start() }
+
+    /** 우리 게이트를 치운 바로 다음, 같은 위치에 진짜 탭을 한 번 더 보내 실제 버튼이 눌리게 한다. */
+    private fun tapThrough(x: Float, y: Float) {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                val path = android.graphics.Path().apply { moveTo(x, y) }
+                val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 40)
+                val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
+                svc.dispatchGesture(gesture, null, null)
+            } catch (_: Exception) { }
+        }, 30)
+    }
 
     private fun animateProgress(v: ZipView, from: Float, to: Float, onEnd: () -> Unit) {
         val anim = ValueAnimator.ofFloat(from, to)
