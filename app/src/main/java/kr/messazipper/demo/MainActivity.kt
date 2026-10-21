@@ -68,7 +68,7 @@ class MainActivity : Activity() {
         refreshSens()
 
         root.addView(TextView(this).apply {
-            text = "말투 변환용 OpenAI API 키 (선택)"
+            text = "OpenAI API 키 (넣으면 AI가 대화 분위기·감정까지 읽고 판단해요)"
             setPadding(0, dp(20), 0, dp(4))
         })
         val key = EditText(this).apply {
@@ -82,13 +82,42 @@ class MainActivity : Activity() {
             Toast.makeText(this, "저장했어요", Toast.LENGTH_SHORT).show()
         })
 
+        // 키가 진짜 되는지 폰에서 바로 확인
+        val testOut = TextView(this).apply { textSize = 13f; setPadding(0, dp(8), 0, 0) }
+        root.addView(button("AI 판단 테스트 (싸우는 상황 예시)") {
+            Prefs.setApiKey(this, key.text.toString())
+            val k = Prefs.apiKey(this)
+            val sample = JudgeInput(
+                text = "시발 너 때문에 다 망했잖아 다신 연락하지마",
+                lines = listOf(
+                    ChatLine(false, "아까 그거 왜 말 안 했어?"),
+                    ChatLine(true, "몰랐다니까"),
+                    ChatLine(false, "너 진짜 어이없다")
+                ),
+                formal = false, room = "친구", sens = 1
+            )
+            if (k.isEmpty()) {
+                val v = Judge.judgeContext(sample)
+                testOut.text = "키 없음 → 기기 규칙 판단: ${if (v.lock) "🔒 잠금" else "통과"} (${v.mood}) ${v.reason}"
+            } else {
+                testOut.text = "AI에게 물어보는 중…"
+                Llm.judge(k, sample) { v ->
+                    testOut.text = if (v == null) "⚠️ AI 연결 실패 (키나 인터넷을 확인해 주세요)"
+                    else "✅ AI 판단: ${if (v.lock) "🔒 잠금" else "통과"} · 상대 ${v.relation} · 분위기 ${v.mood}\n${v.reason}"
+                }
+            }
+        })
+        root.addView(testOut)
+
         root.addView(TextView(this).apply {
             textSize = 12f
             setPadding(0, dp(20), 0, 0)
-            text = "• 판정은 기기 안에서만 해요. 글자는 '말투 변환하기'를 누른 순간에만 변환 서비스로 보내져요.\n" +
-                "• 쓰는 법: 카톡을 열면 오른쪽에 모드 버튼이 떠요. 눌러서 친구 ↔ 윗사람을 바꿔요.\n" +
-                "• 부적절한 문장을 쓰면 전송 버튼 위에 지퍼가 덮여요. 지퍼를 누르면 선택지가 나와요.\n" +
-                "• 이 앱은 대신 전송하지 않아요. 보낼지는 항상 본인이 정해요.\n" +
+            text = "• 타이핑하는 동안에는 아무것도 뜨지 않아요. 전송(종이비행기) 버튼을 누르는 순간에만 판단해요.\n" +
+                "• 괜찮은 메시지는 그냥 전송돼요. 감정에 휩싸인 메시지만 그 순간 지퍼가 잠겨요.\n" +
+                "• 친구끼리 장난으로 욕하는 분위기면 통과, 다투는 중 홧김에 쓰는 말이면 잠가요.\n" +
+                "• 상대가 윗사람(방 이름에 선생님·부장님 등, 또는 내가 계속 존댓말을 쓰는 방)이면 무례한 말을 잠가요.\n" +
+                "• 잠긴 지퍼는 왼쪽으로 밀면 풀려요. 차분하게/존댓말로 바꾸기, 다시 쓰기, 그대로 보내기도 고를 수 있어요.\n" +
+                "• API 키를 넣으면 판단을 위해 화면의 최근 대화 몇 줄과 보낼 문장이 OpenAI로 보내져요. 키가 없으면 기기 안에서만 판단해요.\n" +
                 "• 시연용 시제품이에요. 메신저 앱 업데이트로 버튼 위치를 못 찾을 수 있어요."
         })
 
