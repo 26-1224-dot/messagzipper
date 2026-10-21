@@ -83,6 +83,8 @@ class ZipperService : AccessibilityService() {
         val out = ArrayList<TextNode>()
         fun visit(n: AccessibilityNodeInfo?, depth: Int) {
             if (n == null || depth > 25) return
+            // 카톡은 방에 들어가도 뒤에 채팅 목록 화면을 '안 보이게' 남겨 둔다 → 안 보이는 건 통째로 무시
+            if (depth > 0 && !n.isVisibleToUser) return
             val b = Rect()
             n.getBoundsInScreen(b)
             if (depth > 0 && b.height() > 0 && b.top > bottom) return   // 제목줄보다 아래에 있는 덩어리는 통째로 건너뜀

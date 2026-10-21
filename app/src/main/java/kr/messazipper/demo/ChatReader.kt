@@ -10,7 +10,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 object ChatReader {
     private val NOISE = Regex(
         "^(오전|오후)\\s?\\d{1,2}:\\d{2}$|^\\d{1,2}:\\d{2}$|^\\d{1,3}$|^\\d{4}년.*|.*요일$|" +
-        "^읽음$|^Seen.*|^전송됨$|^사진$|^동영상$|^이모티콘$|^AI 영상 만들기$"
+        "^읽음$|^Seen.*|^전송됨$|^메시지가 삭제되었습니다\\.?$|^사진$|^동영상$|^이모티콘$|^AI 영상 만들기$"
     )
 
     fun read(root: AccessibilityNodeInfo?, inputTop: Int, screenW: Int, topLimit: Int, room: String?): List<ChatLine> {
@@ -18,6 +18,8 @@ object ChatReader {
         val found = ArrayList<Pair<Int, ChatLine>>()
         fun visit(n: AccessibilityNodeInfo?, depth: Int) {
             if (n == null || depth > 40) return
+            // 뒤에 숨어 있는 이전 화면(채팅 목록 등)의 글자는 읽지 않는다
+            if (depth > 0 && !n.isVisibleToUser) return
             val t = n.text?.toString()?.trim()
             if (!t.isNullOrEmpty() && !n.isEditable && t.length <= 300 && !NOISE.matches(t) && t != room) {
                 val b = Rect()
