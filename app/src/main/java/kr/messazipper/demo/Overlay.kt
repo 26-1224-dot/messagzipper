@@ -44,6 +44,7 @@ class Overlay(private val svc: AccessibilityService) {
     private fun dp(v: Int) = (v * density).toInt()
 
     var onToggleMode: (() -> Unit)? = null
+    var onFabLongPress: (() -> Unit)? = null
     var onGateTap: ((Float, Float) -> Unit)? = null
     var onZipTap: (() -> Unit)? = null
     var onUnlockSwipe: (() -> Unit)? = null
@@ -76,36 +77,47 @@ class Overlay(private val svc: AccessibilityService) {
 
     // ───────── 모드 표시 버튼(친구 ↔ 윗사람) ─────────
     /** 모드 + 읽어 낸 상대 이름을 같이 보여 준다(이름을 제대로 읽었는지 바로 확인 가능). */
-    fun showFab(formal: Boolean, name: String?) {
-        if (fab == null) {
-            val t = TextView(svc).apply {
-                textSize = 12f
-                setTextColor(Color.WHITE)
-                typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                setPadding(dp(12), dp(8), dp(12), dp(8))
-                setOnClickListener { onToggleMode?.invoke() }
-            }
-            fab = t
-            fabKey = null
-            add(t, lp(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-                dp(8), dp(120), Gravity.TOP or Gravity.END))
+    private fun ensureFab() {
+        if (fab != null) return
+        val t = TextView(svc).apply {
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener { onToggleMode?.invoke() }
+            setOnLongClickListener { onFabLongPress?.invoke(); true }
         }
-        val shortName = name?.trim()?.let { if (it.length > 8) it.take(8) + "…" else it }?.ifBlank { null }
-        val key = "$formal|$shortName"
+        fab = t
+        fabKey = null
+        add(t, lp(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+            dp(8), dp(120), Gravity.TOP or Gravity.END))
+    }
+
+    private fun setFab(key: String, label: String, color: String) {
+        ensureFab()
         if (fabKey == key) return
         fabKey = key
         fab?.apply {
-            val mode = if (formal) "🔒 윗사람 모드" else "🔓 친구 모드"
-            text = if (shortName != null) "$mode · $shortName" else mode
+            text = label
             background = GradientDrawable().apply {
                 cornerRadius = dp(20).toFloat()
-                setColor(if (formal) Color.parseColor("#E61E3A5F") else Color.parseColor("#E6455A64"))
+                setColor(Color.parseColor(color))
             }
         }
     }
 
-    private fun hideFab() { remove(fab); fab = null; fabKey = null }
+    fun showFab(formal: Boolean, name: String?) {
+        val shortName = name?.trim()?.let { if (it.length > 8) it.take(8) + "…" else it }?.ifBlank { null }
+        val mode = if (formal) "🔒 윗사람 모드" else "🔓 친구 모드"
+        setFab("$formal|$shortName", if (shortName != null) "$mode · $shortName" else mode,
+            if (formal) "#E61E3A5F" else "#E6455A64")
+    }
+
+    /** 방이 바뀌어서 상대를 다시 확인하는 중 */
+    fun showFabChecking() = setFab("checking", "🔍 방 확인 중", "#E6707A82")
+
+    fun hideFab() { remove(fab); fab = null; fabKey = null }
 
     // ───────── 투명 게이트(전송 버튼 위에만) ─────────
     fun placeGate(r: Rect) {
@@ -274,6 +286,17 @@ class Overlay(private val svc: AccessibilityService) {
             btn("이걸로 바꾸기", "#1E3A5F", Color.WHITE, onUse),
             btn("취소", "#E8ECEF", Color.parseColor("#1B2B34"), onCancel)
         ))
+        panel = p
+        add(p, lp(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT, 0, 0, Gravity.BOTTOM))
+    }
+
+    /** 인식 상태 확인용 안내 창 */
+    fun showInfo(title: String, body: String) {
+        hidePanel()
+        val p = card()
+        p.addView(label(title, 15f, true, "#1B2B34"))
+        p.addView(label(body, 12f, false, "#33424D"))
+        p.addView(row(btn("닫기", "#E8ECEF", Color.parseColor("#1B2B34")) { hidePanel() }))
         panel = p
         add(p, lp(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT, 0, 0, Gravity.BOTTOM))
     }
