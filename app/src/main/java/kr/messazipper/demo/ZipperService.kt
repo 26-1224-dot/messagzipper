@@ -25,6 +25,12 @@ class ZipperService : AccessibilityService() {
             evaluate(currentText)
         }
         overlay.onCoverTap = { openLockPanel() }
+        overlay.onUnlockSwipe = {
+            // 지퍼를 왼쪽으로 스와이프해서 직접 연 경우 = '그대로 보내기'와 같은 동작
+            allowedText = currentText
+            overlay.hidePanel()
+            overlay.hideCover()
+        }
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
@@ -54,7 +60,9 @@ class ZipperService : AccessibilityService() {
         val r = Judge.judge(text, Prefs.formal(this), Prefs.sens(this))
         if (r.lock) {
             lastReason = r.reason
-            overlay.showCover(findSendBounds())
+            // 같은 잠금이 이미 떠 있으면(타이핑을 계속하는 중) 다시 만들지 않는다 —
+            // armCover 자체가 중복 생성을 막아 애니메이션/드래그 상태를 그대로 둔다.
+            overlay.armCover(findSendBounds())
         } else {
             overlay.hideCover()
             overlay.hidePanel()
